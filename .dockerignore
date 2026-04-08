@@ -1,0 +1,14 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.git
+.idea
+.vscode
+*.egg-info
+dist
+build
+.env
+results
+archive.zip
+*.ipynb
