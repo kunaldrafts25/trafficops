@@ -1,11 +1,7 @@
 import json
 import os
-import sys
 
 from openai import OpenAI
-from openenv.core import EnvClient
-from openenv.core.client_types import StepResult
-from openenv.core.env_server.types import State
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
@@ -22,12 +18,12 @@ You receive observations describing the network state: intersections (with queue
 
 You must respond with a single JSON action object. Available operations:
 - "noop": Do nothing this step.
-- "set_bias": Increase green time for a direction. Params: targets=[intersection_ids], params={"direction": "N"|"S"|"E"|"W", "multiplier": 1.0-10.0, "duration_ticks": int}
-- "set_coordination": Coordinate a corridor. Params: targets=[corridor_id], params={"direction": "N"|"S"|"E"|"W", "target_speed": 0.1-1.0, "duration_ticks": int}
-- "preempt": Force green for a direction (for emergencies). Params: targets=[intersection_ids], params={"direction": "N"|"S"|"E"|"W", "duration_ticks": 1-60}
-- "reroute": Reroute traffic around a blocked road. Params: targets=[blocked_road], params={"blocked_road": str, "detour": [road_ids], "duration_ticks": int}
-- "set_policy": Apply school_zone policy. Params: targets=[intersection_ids], params={"policy": "school_zone", "duration_ticks": int}
-- "cancel": Cancel an active plan. Params: plan_id=str
+- "set_bias": Increase green time for a direction at target intersections. params={"direction": "N"|"S"|"E"|"W", "multiplier": 1.0-10.0, "duration_ticks": int}
+- "set_coordination": Coordinate signals along a corridor for green wave. targets=[corridor_id], params={"direction": "N"|"S"|"E"|"W", "target_speed": 0.1-1.0, "duration_ticks": int}
+- "preempt": Force green for a direction (for emergencies). targets=[intersection_ids], params={"direction": "N"|"S"|"E"|"W", "duration_ticks": 1-60}
+- "reroute": Reroute traffic around a blocked road. targets=[blocked_road], params={"blocked_road": str, "detour": [road_ids], "duration_ticks": int}
+- "set_policy": Apply school_zone policy to reduce phase durations. targets=[intersection_ids], params={"policy": "school_zone", "duration_ticks": int}
+- "cancel": Cancel an active plan. plan_id=str
 
 Respond ONLY with a JSON object like:
 {"op": "set_bias", "targets": ["I1"], "params": {"direction": "W", "multiplier": 2.0, "duration_ticks": 30}, "reason": "heavy westbound queue"}
@@ -35,12 +31,13 @@ Respond ONLY with a JSON object like:
 If unsure, use {"op": "noop", "targets": [], "params": {}, "reason": "observing"}"""
 
 
-def build_user_message(obs: dict) -> str:
-    summary = obs.get("summary", "")
+def build_user_message(obs_dict: dict) -> str:
+    summary = obs_dict.get("summary", "")
     parts = [summary]
-    if obs.get("last_action_error"):
-        parts.append(f"\nLAST ERROR: {obs['last_action_error']}")
-    parts.append(f"\nBudget remaining: {obs.get('interventions_budget', 0) - obs.get('interventions_used', 0)}")
+    if obs_dict.get("last_action_error"):
+        parts.append(f"\nLAST ERROR: {obs_dict['last_action_error']}")
+    budget_left = obs_dict.get("interventions_budget", 0) - obs_dict.get("interventions_used", 0)
+    parts.append(f"\nBudget remaining: {budget_left}")
     return "\n".join(parts)
 
 
@@ -63,18 +60,18 @@ def parse_action(text: str) -> dict:
     return {"op": "noop", "targets": [], "params": {}, "reason": "parse_failure"}
 
 
-def run_task(task: str, client: OpenAI, env: EnvClient):
+def run_task(task: str, llm: OpenAI, env):
     env_name = "trafficops"
     print(f"[START] task={task} env={env_name} model={MODEL_NAME}")
 
     result = env.reset(task=task)
-    obs = result.observation if hasattr(result, "observation") else result
-    obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else obs.__dict__
+    obs = result.observation
+    obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     rewards = []
     step_num = 0
-    done = obs_dict.get("done", False)
+    done = result.done
 
     while not done:
         user_msg = build_user_message(obs_dict)
@@ -84,7 +81,7 @@ def run_task(task: str, client: OpenAI, env: EnvClient):
             messages = [messages[0]] + messages[-18:]
 
         try:
-            resp = client.chat.completions.create(
+            resp = llm.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=0.2,
@@ -105,10 +102,10 @@ def run_task(task: str, client: OpenAI, env: EnvClient):
             from models import TrafficOpsAction
             action = TrafficOpsAction(**action_dict)
             result = env.step(action)
-            obs = result.observation if hasattr(result, "observation") else result
-            obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else obs.__dict__
-            reward = obs_dict.get("reward", 0.0)
-            done = obs_dict.get("done", False)
+            obs = result.observation
+            obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)
+            reward = result.reward if result.reward is not None else 0.0
+            done = result.done
             error_str = obs_dict.get("last_action_error") or "null"
         except Exception as e:
             reward = 0.0
@@ -122,8 +119,16 @@ def run_task(task: str, client: OpenAI, env: EnvClient):
         )
         step_num += 1
 
-    final_score = obs_dict.get("metadata", {}).get("final_score", 0.0)
-    if final_score is None or final_score == 0.0:
+    final_score = 0.0
+    if isinstance(obs_dict, dict):
+        final_score = obs_dict.get("metadata", {}).get("final_score", 0.0) or 0.0
+        if not final_score:
+            summary = obs_dict.get("summary", "")
+            import re
+            m = re.search(r"EPISODE_END score=([\d.]+)", summary)
+            if m:
+                final_score = float(m.group(1))
+    if not final_score:
         final_score = sum(rewards) / max(1, len(rewards)) if rewards else 0.0
         final_score = max(0.0, min(1.0, (final_score + 5.0) / 10.0))
 
@@ -137,17 +142,18 @@ def run_task(task: str, client: OpenAI, env: EnvClient):
 
 
 def main():
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
+    llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
 
     if LOCAL_IMAGE_NAME:
-        from openenv.core import EnvClient
-        env = EnvClient.from_docker_image(LOCAL_IMAGE_NAME)
+        from client import TrafficOpsEnv
+        env = TrafficOpsEnv.from_docker_image(LOCAL_IMAGE_NAME).sync()
     else:
-        env = EnvClient(base_url=ENV_URL)
+        from client import TrafficOpsEnv
+        env = TrafficOpsEnv(base_url=ENV_URL).sync()
 
     try:
         for task in TASKS:
-            run_task(task, client, env)
+            run_task(task, llm, env)
     finally:
         env.close()
 
