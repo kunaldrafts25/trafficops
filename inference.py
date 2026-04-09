@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from openai import OpenAI
 
@@ -12,41 +13,37 @@ LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies", "rush_hour_surge", "multi_incident_cascade"]
 
-SYSTEM_PROMPT = """You are an AI traffic operations controller. You manage traffic signals across a road network to maximize throughput, minimize wait times, and prioritize emergency vehicles.
+MAX_TOTAL_TIME = 25 * 60  # 25 min hard cap (leave 5 min buffer)
+MAX_TASK_TIME = 4 * 60    # 4 min per task
+LLM_TIMEOUT = 30          # 30s per LLM call
+MAX_STEPS_PER_TASK = 30
 
-CRITICAL: Signals use FIXED-TIME cycling by default — they alternate phases at fixed intervals without responding to demand. This wastes green time on empty approaches. Your PRIMARY job is to set_bias on the direction with the most traffic so signals become DEMAND-RESPONSIVE. Without your bias, throughput will be poor.
+SYSTEM_PROMPT = """You are an AI traffic operations controller managing a road network. Maximize throughput, minimize wait times, prioritize emergency vehicles.
 
-You receive observations describing the network state: intersections (with queue lengths, signal phases, biases), corridors, incidents, emergencies, active plans, and metrics.
+Signals use FIXED-TIME cycling by default. Use set_bias to make them DEMAND-RESPONSIVE.
 
-You must respond with a single JSON action object. Available operations:
-- "noop": Do nothing this step.
-- "set_bias": IMPORTANT — enables demand-responsive switching for a direction. params={"direction": "N"|"S"|"E"|"W", "multiplier": 1.0-10.0, "duration_ticks": int}
-- "set_coordination": Coordinate signals along a corridor. targets=[corridor_id], params={"direction": "N"|"S"|"E"|"W", "target_speed": 0.1-1.0, "duration_ticks": int}
-- "preempt": Force green for a direction (for emergencies). targets=[intersection_ids], params={"direction": "N"|"S"|"E"|"W", "duration_ticks": 1-60}
-- "reroute": Reroute traffic around a blocked road. params={"blocked_road": str, "detour": [road_ids], "duration_ticks": int}
-- "set_policy": Apply school_zone policy to reduce phase durations. targets=[intersection_ids], params={"policy": "school_zone", "duration_ticks": int}
-- "cancel": Cancel an active plan. plan_id=str
+Actions (respond with ONE JSON object):
+- "noop": Do nothing
+- "set_bias": Enable demand-responsive switching. params={"direction":"N"|"S"|"E"|"W","multiplier":1.0-10.0,"duration_ticks":int}
+- "set_coordination": Green wave on corridor. targets=[corridor_id], params={"direction":"N"|"S"|"E"|"W","target_speed":0.5,"duration_ticks":int}
+- "preempt": Force green for emergencies. targets=[intersection_ids], params={"direction":"N"|"S"|"E"|"W","duration_ticks":1-60}
+- "reroute": Detour around blocked road. params={"blocked_road":str,"detour":[road_ids],"duration_ticks":int}
+- "set_policy": School zone. targets=[intersection_ids], params={"policy":"school_zone","duration_ticks":int}
+- "cancel": Cancel plan. plan_id=str
 
-Strategy tips:
-1. FIRST ACTION should usually be set_bias on the dominant traffic direction
-2. When you see EMERGENCIES, preempt the direction they're approaching from
-3. When you see INCIDENTS blocking a road, reroute around it using alternative roads
-4. Watch for demand changes (queue lengths shifting) and rebias accordingly
-5. Budget your interventions — each non-noop/non-cancel action costs 1 from your budget
+Strategy: 1) set_bias on dominant direction first 2) preempt for emergencies 3) reroute around incidents 4) budget wisely
 
-Respond ONLY with a JSON object like:
-{"op": "set_bias", "targets": ["I1", "I2", "I3"], "params": {"direction": "W", "multiplier": 2.5, "duration_ticks": 100}, "reason": "heavy westbound arterial demand"}
-
-If unsure, use {"op": "noop", "targets": [], "params": {}, "reason": "observing"}"""
+Example: {"op":"set_bias","targets":["I1","I2"],"params":{"direction":"W","multiplier":2.5,"duration_ticks":100},"reason":"heavy westbound"}
+Default: {"op":"noop","targets":[],"params":{},"reason":"observing"}"""
 
 
 def build_user_message(obs_dict: dict) -> str:
     summary = obs_dict.get("summary", "")
+    budget_left = obs_dict.get("interventions_budget", 0) - obs_dict.get("interventions_used", 0)
     parts = [summary]
     if obs_dict.get("last_action_error"):
-        parts.append(f"\nLAST ERROR: {obs_dict['last_action_error']}")
-    budget_left = obs_dict.get("interventions_budget", 0) - obs_dict.get("interventions_used", 0)
-    parts.append(f"\nBudget remaining: {budget_left}")
+        parts.append(f"ERROR: {obs_dict['last_action_error']}")
+    parts.append(f"Budget: {budget_left}")
     return "\n".join(parts)
 
 
@@ -69,10 +66,11 @@ def parse_action(text: str) -> dict:
     return {"op": "noop", "targets": [], "params": {}, "reason": "parse_failure"}
 
 
-def run_task(task: str, llm: OpenAI, env):
+def run_task(task: str, llm: OpenAI, env, global_start: float):
     env_name = "trafficops"
-    print(f"[START] task={task} env={env_name} model={MODEL_NAME}")
+    print(f"[START] task={task} env={env_name} model={MODEL_NAME}", flush=True)
 
+    task_start = time.time()
     result = env.reset(task=task)
     obs = result.observation
     obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)
@@ -83,23 +81,35 @@ def run_task(task: str, llm: OpenAI, env):
     done = result.done
 
     while not done:
+        # Time guards
+        if time.time() - global_start > MAX_TOTAL_TIME:
+            print(f"[STEP] step={step_num} action=noop reward=0.00 done=true error=global_timeout", flush=True)
+            break
+        if time.time() - task_start > MAX_TASK_TIME:
+            print(f"[STEP] step={step_num} action=noop reward=0.00 done=true error=task_timeout", flush=True)
+            break
+        if step_num >= MAX_STEPS_PER_TASK:
+            print(f"[STEP] step={step_num} action=noop reward=0.00 done=true error=max_steps", flush=True)
+            break
+
         user_msg = build_user_message(obs_dict)
         messages.append({"role": "user", "content": user_msg})
 
-        if len(messages) > 20:
-            messages = [messages[0]] + messages[-18:]
+        # Keep message window small — system + last 10 messages
+        if len(messages) > 12:
+            messages = [messages[0]] + messages[-10:]
 
         try:
             resp = llm.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=300,
+                max_tokens=200,
+                timeout=LLM_TIMEOUT,
             )
             assistant_text = resp.choices[0].message.content or '{"op":"noop","targets":[],"params":{},"reason":"empty"}'
-        except Exception as e:
+        except Exception:
             assistant_text = '{"op":"noop","targets":[],"params":{},"reason":"api_error"}'
-            messages.append({"role": "assistant", "content": assistant_text})
 
         messages.append({"role": "assistant", "content": assistant_text})
         action_dict = parse_action(assistant_text)
@@ -131,9 +141,8 @@ def run_task(task: str, llm: OpenAI, env):
     if isinstance(obs_dict, dict):
         final_score = obs_dict.get("final_score") or 0.0
         if not final_score:
-            summary = obs_dict.get("summary", "")
             import re
-            m = re.search(r"EPISODE_END score=([\d.]+)", summary)
+            m = re.search(r"EPISODE_END score=([\d.]+)", obs_dict.get("summary", ""))
             if m:
                 final_score = float(m.group(1))
     if not final_score:
@@ -150,6 +159,7 @@ def run_task(task: str, llm: OpenAI, env):
 
 
 def main():
+    global_start = time.time()
     llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
 
     if LOCAL_IMAGE_NAME:
@@ -161,7 +171,11 @@ def main():
 
     try:
         for task in TASKS:
-            run_task(task, llm, env)
+            if time.time() - global_start > MAX_TOTAL_TIME:
+                print(f"[START] task={task} env=trafficops model={MODEL_NAME}", flush=True)
+                print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
+                continue
+            run_task(task, llm, env, global_start)
     finally:
         env.close()
 
