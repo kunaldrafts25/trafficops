@@ -177,6 +177,7 @@ class World:
     last_action_error: Optional[str] = None
     next_plan_seq: int = 0
     reroute_overrides: dict[str, list[str]] = field(default_factory=dict)
+    controller_mode: str = "fixed"  # "fixed", "max_pressure"
 
     def log(self, msg: str) -> None:
         self.event_log.append(f"t={self.tick} {msg}")

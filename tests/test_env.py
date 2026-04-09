@@ -86,24 +86,30 @@ class TestActions:
 
 
 class TestRewardSignal:
-    def test_smart_beats_noop(self, env):
-        # Noop
-        obs = env.reset(seed=42, task="single_corridor")
+    def test_smart_beats_noop_on_hard_task(self, env):
+        # Noop on hard task — Max-Pressure can't reroute
+        obs = env.reset(seed=42, task="incident_and_emergencies")
         while not obs.done:
             obs = env.step(TrafficOpsAction(op="noop"))
         noop_score = obs.final_score
 
-        # Smart: bias arterial + preempt ambulance
-        obs = env.reset(seed=42, task="single_corridor")
+        # Smart: reroute around incident + preempt for emergencies
+        obs = env.reset(seed=42, task="incident_and_emergencies")
         obs = env.step(TrafficOpsAction(
-            op="set_bias", targets=["I1", "I2", "I3"],
-            params={"direction": "W", "multiplier": 2.5, "duration_ticks": 190},
+            op="set_bias", targets=["I1", "I2", "I3", "I4"],
+            params={"direction": "S", "multiplier": 2.0, "duration_ticks": 270},
         ))
-        while not obs.done and obs.tick < 70:
+        while not obs.done and obs.tick < 55:
             obs = env.step(TrafficOpsAction(op="noop"))
         obs = env.step(TrafficOpsAction(
-            op="preempt", targets=["I2"],
-            params={"direction": "N", "duration_ticks": 15},
+            op="reroute", targets=["R_I1_I2"],
+            params={"blocked_road": "R_I1_I2", "detour": ["R_I1_I3", "R_I3_I4", "R_I4_I2"], "duration_ticks": 200},
+        ))
+        while not obs.done and obs.tick < 90:
+            obs = env.step(TrafficOpsAction(op="noop"))
+        obs = env.step(TrafficOpsAction(
+            op="preempt", targets=["I3", "I1"],
+            params={"direction": "S", "duration_ticks": 20},
         ))
         while not obs.done:
             obs = env.step(TrafficOpsAction(op="noop"))

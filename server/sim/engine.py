@@ -169,9 +169,9 @@ def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> N
     if I.phase_timer < I.min_phase_ticks:
         return
 
-    # Fixed-time cycling by default; pressure-responsive only when LLM has set bias
+    # Controller hierarchy: LLM bias > Max-Pressure > Fixed-time
     if _has_nondefault_bias(I):
-        # Green-wave: use corridor offset to synchronize phase start
+        # LLM has set bias → pressure-responsive with green-wave offsets
         offset = _get_corridor_offset(I.id, world)
         effective_timer = I.phase_timer + offset
 
@@ -186,6 +186,25 @@ def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> N
             force_switch or pressures[best] > current_pressure * HYSTERESIS
         ):
             I.current_phase_idx = best
+            I.phase_timer = 0
+    elif world.controller_mode == "max_pressure":
+        # Max-Pressure: switch to phase with highest upstream-downstream pressure
+        mp: list[float] = []
+        for idx, phase in enumerate(I.phases):
+            p = 0.0
+            for d in phase:
+                upstream = I.incoming.get(d)
+                downstream = I.outgoing.get(d)
+                u_q = world.roads[upstream].queue_at_tail() if upstream and upstream in world.roads else 0
+                d_occ = world.roads[downstream].occupancy() if downstream and downstream in world.roads else 0
+                p += max(0, u_q - d_occ)
+            mp.append(p)
+        best = max(range(len(I.phases)), key=lambda i: mp[i])
+        if best != I.current_phase_idx and mp[best] > mp[I.current_phase_idx]:
+            I.current_phase_idx = best
+            I.phase_timer = 0
+        elif I.phase_timer >= I.max_phase_ticks:
+            I.current_phase_idx = (I.current_phase_idx + 1) % len(I.phases)
             I.phase_timer = 0
     else:
         # Fixed-time: cycle after max_phase_ticks unconditionally

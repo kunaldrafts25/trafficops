@@ -28,6 +28,7 @@ def new_world(
     horizon: int,
     seed: int,
     interventions_budget: int,
+    controller_mode: str = "max_pressure",
 ) -> World:
     return World(
         tick=0,
@@ -40,6 +41,7 @@ def new_world(
         corridors={},
         metrics=Metrics(),
         interventions_budget=interventions_budget,
+        controller_mode=controller_mode,
     )
 
 
