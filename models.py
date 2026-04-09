@@ -15,7 +15,13 @@ ActionOp = Literal[
 ]
 
 Direction = Literal["N", "S", "E", "W"]
-TaskId = Literal["single_corridor", "asymmetric_network", "incident_and_emergencies"]
+TaskId = Literal[
+    "single_corridor",
+    "asymmetric_network",
+    "incident_and_emergencies",
+    "rush_hour_surge",
+    "multi_incident_cascade",
+]
 
 
 class TrafficOpsAction(Action):
@@ -119,6 +125,7 @@ class TrafficOpsObservation(Observation):
     interventions_used: int = 0
     interventions_budget: int = 0
     last_action_error: Optional[str] = None
+    final_score: Optional[float] = None
 
 
 class TrafficOpsState(State):

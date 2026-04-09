@@ -56,6 +56,12 @@ Three-intersection arterial with cross traffic and one ambulance. Bias signals t
 ### 3. `incident_and_emergencies` (Hard)
 2x2 grid with a long-duration road blockage plus three emergency vehicles (ambulance, fire, police) arriving at staggered times. The agent must reroute civilians around the incident, preempt signals for each emergency, and bias for throughput. Horizon: 280 ticks, budget: 8 interventions.
 
+### 4. `rush_hour_surge` (Medium-Hard)
+2x2 grid where traffic demand doubles suddenly mid-episode with no advance warning. The agent must detect the surge from rising queue lengths and adapt bias accordingly, while handling an ambulance during peak chaos. Horizon: 240 ticks, budget: 6 interventions.
+
+### 5. `multi_incident_cascade` (Expert)
+2x2 grid with two incidents activating on different roads at different times, causing cascading congestion. Two emergency vehicles need rerouting around separate blockages. Tests multi-objective reasoning, sequential rerouting, and budget management across overlapping crises. Horizon: 300 ticks, budget: 10 interventions.
+
 ## Controller Design
 
 Intersections use **fixed-time cycling** by default — signals alternate phases at fixed intervals without responding to demand. When the LLM sets a **bias** on a direction (via `set_bias` or `set_coordination`), the controller switches to **pressure-responsive** mode, adapting phase durations based on real-time queue lengths. This means doing nothing (noop) results in substantial wasted green time, while a smart LLM agent that biases the right directions can significantly improve throughput and efficiency.
@@ -96,13 +102,15 @@ python inference.py
 
 ### Baseline Scores
 
-| Task | Noop | Scripted Smart | Gap |
-|---|---|---|---|
-| single_corridor | 0.51 | 0.67 | +0.16 |
-| asymmetric_network | 0.59 | 0.70 | +0.11 |
-| incident_and_emergencies | 0.36 | 0.61 | +0.25 |
+| Task | Difficulty | Noop |
+|---|---|---|
+| single_corridor | Easy | 0.51 |
+| asymmetric_network | Medium | 0.59 |
+| rush_hour_surge | Medium-Hard | 0.60 |
+| incident_and_emergencies | Hard | 0.36 |
+| multi_incident_cascade | Expert | 0.50 |
 
-Scores vary with seed (stochastic spawn timing). Noop baseline uses fixed-time cycling with no LLM intervention.
+Scores vary with seed (stochastic spawn timing). Noop uses fixed-time cycling with no LLM intervention. Smart agents using bias + preempt + reroute score 0.15-0.25 higher.
 
 ## Project Structure
 
@@ -116,13 +124,15 @@ trafficops/
 ├── models.py
 ├── __init__.py
 ├── README.md
+├── tests/
+│   └── test_env.py
 └── server/
     ├── app.py
     ├── trafficops_environment.py
     ├── actions.py
-    ├── grading.py
+    ├── grading.py          # openenv Rubric system (WeightedSum)
     ├── observations.py
-    ├── tasks.py
+    ├── tasks.py             # 5 tasks: easy → expert
     └── sim/
         ├── world.py
         ├── engine.py

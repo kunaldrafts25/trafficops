@@ -33,12 +33,6 @@ def build_observation(
         world, intersections, incidents, emergencies, plans, metrics, last_action_error
     )
 
-    meta: dict = {}
-    if final_score is not None:
-        meta["final_score"] = final_score
-    if done:
-        meta["final_metrics"] = metrics.model_dump()
-
     return TrafficOpsObservation(
         task=world.task,  # type: ignore[arg-type]
         tick=world.tick,
@@ -54,9 +48,9 @@ def build_observation(
         interventions_used=world.interventions_used,
         interventions_budget=world.interventions_budget,
         last_action_error=last_action_error,
+        final_score=final_score,
         done=done,
         reward=reward,
-        metadata=meta,
     )
 
 

@@ -10,7 +10,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies"]
+TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies", "rush_hour_surge", "multi_incident_cascade"]
 
 SYSTEM_PROMPT = """You are an AI traffic operations controller. You manage traffic signals across a road network to maximize throughput, minimize wait times, and prioritize emergency vehicles.
 
@@ -99,10 +99,7 @@ def run_task(task: str, llm: OpenAI, env):
             assistant_text = resp.choices[0].message.content or '{"op":"noop","targets":[],"params":{},"reason":"empty"}'
         except Exception as e:
             assistant_text = '{"op":"noop","targets":[],"params":{},"reason":"api_error"}'
-            print(f"[STEP] step={step_num} action=noop reward=0.00 done=false error={str(e)}", flush=True)
             messages.append({"role": "assistant", "content": assistant_text})
-            step_num += 1
-            continue
 
         messages.append({"role": "assistant", "content": assistant_text})
         action_dict = parse_action(assistant_text)
@@ -132,7 +129,7 @@ def run_task(task: str, llm: OpenAI, env):
 
     final_score = 0.0
     if isinstance(obs_dict, dict):
-        final_score = obs_dict.get("metadata", {}).get("final_score", 0.0) or 0.0
+        final_score = obs_dict.get("final_score") or 0.0
         if not final_score:
             summary = obs_dict.get("summary", "")
             import re
@@ -143,7 +140,7 @@ def run_task(task: str, llm: OpenAI, env):
         final_score = sum(rewards) / max(1, len(rewards)) if rewards else 0.0
         final_score = max(0.0, min(1.0, (final_score + 5.0) / 10.0))
 
-    success = final_score > 0.3
+    success = final_score > 0.55
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={'true' if success else 'false'} steps={step_num} score={final_score:.3f} rewards={rewards_str}",

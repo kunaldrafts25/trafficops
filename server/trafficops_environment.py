@@ -1,7 +1,7 @@
 from typing import Any, Optional
 from uuid import uuid4
 
-from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.interfaces import Environment, EnvironmentMetadata
 
 from models import TrafficOpsAction, TrafficOpsObservation, TrafficOpsState
 
@@ -34,7 +34,8 @@ class TrafficOpsEnvironment(Environment):
         **kwargs: Any,
     ) -> TrafficOpsObservation:
         task = kwargs.get("task", "single_corridor")
-        if task not in ("single_corridor", "asymmetric_network", "incident_and_emergencies"):
+        from .tasks import TASK_IDS
+        if task not in TASK_IDS:
             task = "single_corridor"
         seed_val = seed if seed is not None else 42
 
@@ -119,6 +120,18 @@ class TrafficOpsEnvironment(Environment):
         if self._final_breakdown is None:
             return None
         return self._final_breakdown.as_dict()
+
+    def get_metadata(self) -> EnvironmentMetadata:
+        return EnvironmentMetadata(
+            name="TrafficOps",
+            description="LLM-supervised adaptive traffic signal control with emergency prioritization and incident response",
+            version="0.2.0",
+            author="Kunal Singh",
+        )
+
+    def close(self) -> None:
+        self._world = None
+        super().close()
 
     def _episode_terminated(self) -> bool:
         w = self._world
