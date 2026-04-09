@@ -122,6 +122,17 @@ def _expire_preempts(world: World) -> None:
                 I.preempt_expires_tick = None
 
 
+def _has_nondefault_bias(I: Intersection) -> bool:
+    return any(v != 1.0 for v in I.bias.values())
+
+
+def _get_corridor_offset(iid: str, world: World) -> int:
+    for c in world.corridors.values():
+        if c.coordinated and iid in c.phase_offsets:
+            return c.phase_offsets[iid]
+    return 0
+
+
 def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> None:
     I.phase_timer += 1
 
@@ -158,18 +169,29 @@ def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> N
     if I.phase_timer < I.min_phase_ticks:
         return
 
-    best = max(range(len(I.phases)), key=lambda i: pressures[i])
-    current_pressure = pressures[I.current_phase_idx]
+    # Fixed-time cycling by default; pressure-responsive only when LLM has set bias
+    if _has_nondefault_bias(I):
+        # Green-wave: use corridor offset to synchronize phase start
+        offset = _get_corridor_offset(I.id, world)
+        effective_timer = I.phase_timer + offset
 
-    force_switch = I.phase_timer >= I.max_phase_ticks and waiting_elsewhere > 0
-    if force_switch and best == I.current_phase_idx:
-        best = (I.current_phase_idx + 1) % len(I.phases)
+        best = max(range(len(I.phases)), key=lambda i: pressures[i])
+        current_pressure = pressures[I.current_phase_idx]
 
-    if best != I.current_phase_idx and (
-        force_switch or pressures[best] > current_pressure * HYSTERESIS
-    ):
-        I.current_phase_idx = best
-        I.phase_timer = 0
+        force_switch = effective_timer >= I.max_phase_ticks and waiting_elsewhere > 0
+        if force_switch and best == I.current_phase_idx:
+            best = (I.current_phase_idx + 1) % len(I.phases)
+
+        if best != I.current_phase_idx and (
+            force_switch or pressures[best] > current_pressure * HYSTERESIS
+        ):
+            I.current_phase_idx = best
+            I.phase_timer = 0
+    else:
+        # Fixed-time: cycle after max_phase_ticks unconditionally
+        if I.phase_timer >= I.max_phase_ticks:
+            I.current_phase_idx = (I.current_phase_idx + 1) % len(I.phases)
+            I.phase_timer = 0
 
 
 def _move_vehicles(world: World, stats: TickStats) -> None:

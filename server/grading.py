@@ -27,18 +27,18 @@ class ScoreBreakdown:
 
 TASK_WEIGHTS: dict[str, dict[str, float]] = {
     "single_corridor": {
-        "throughput": 0.50,
-        "emergency": 0.00,
+        "throughput": 0.40,
+        "emergency": 0.15,
         "fairness": 0.15,
-        "efficiency": 0.25,
+        "efficiency": 0.20,
         "planning": 0.05,
         "safety": 0.05,
     },
     "asymmetric_network": {
-        "throughput": 0.45,
-        "emergency": 0.00,
+        "throughput": 0.35,
+        "emergency": 0.15,
         "fairness": 0.20,
-        "efficiency": 0.20,
+        "efficiency": 0.15,
         "planning": 0.10,
         "safety": 0.05,
     },
@@ -97,8 +97,8 @@ def _throughput_score(world: World) -> float:
         actual = (v.clear_tick or world.tick) - v.spawn_tick
         slowdowns.append(actual / max(1, optimal))
     mean_slowdown = sum(slowdowns) / len(slowdowns)
-    speed_score = max(0.0, min(1.0, 1.0 - (mean_slowdown - 1.0) / 1.5))
-    return 0.25 * frac + 0.75 * speed_score
+    speed_score = max(0.0, min(1.0, 1.0 - (mean_slowdown - 1.0) / 0.8))
+    return 0.3 * frac + 0.7 * speed_score
 
 
 def _emergency_score(world: World) -> float:
@@ -111,9 +111,9 @@ def _emergency_score(world: World) -> float:
     if not times:
         return 0.0
     mean_clear_ticks = sum(times) / len(times)
-    budget_per_em = 80.0
+    budget_per_em = 40.0
     speed_score = max(0.0, 1.0 - mean_clear_ticks / budget_per_em)
-    return 0.6 * clear_frac + 0.4 * (clear_frac * speed_score)
+    return 0.5 * clear_frac + 0.5 * (clear_frac * speed_score)
 
 
 def _fairness_score(world: World) -> float:
@@ -128,7 +128,7 @@ def _efficiency_score(world: World) -> float:
     total_ticks_seen = max(1, world.tick * max(1, len(world.intersections)))
     wasted = world.metrics.wasted_green_ticks
     ratio = wasted / total_ticks_seen
-    return max(0.0, 1.0 - 4.0 * ratio)
+    return max(0.0, 1.0 - 6.0 * ratio)
 
 
 def _planning_score(world: World) -> float:

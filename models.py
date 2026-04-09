@@ -65,6 +65,7 @@ class EmergencyView(BaseModel):
     origin: str
     destination: str
     current_road: Optional[str]
+    remaining_route: list[str] = Field(default_factory=list)
     ticks_since_spawn: int
     eta_ticks: Optional[int]
     cleared: bool
@@ -77,6 +78,17 @@ class PlanView(BaseModel):
     expires_tick: Optional[int]
     targets: list[str]
     params: dict[str, Any]
+
+
+class RoadView(BaseModel):
+    id: str
+    from_node: str
+    to_node: str
+    approach_direction: Direction
+    length: int
+    occupancy: int
+    queue_at_stop: int
+    blocked: bool
 
 
 class MetricsView(BaseModel):
@@ -97,6 +109,7 @@ class TrafficOpsObservation(Observation):
     tick: int = 0
     horizon: int = 0
     summary: str = ""
+    roads: list[RoadView] = Field(default_factory=list)
     intersections: list[IntersectionView] = Field(default_factory=list)
     corridors: list[CorridorView] = Field(default_factory=list)
     incidents: list[IncidentView] = Field(default_factory=list)

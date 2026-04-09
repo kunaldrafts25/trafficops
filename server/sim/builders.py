@@ -137,11 +137,16 @@ def spawn_stream(
     vid_prefix: str,
     vtype: VehicleType,
     route: list[str],
+    jitter: float = 0.0,
 ) -> int:
     n = 0
     t = start_tick
     while t < end_tick:
-        spawn(world, t, f"{vid_prefix}_{n}", vtype, route)
+        offset = 0
+        if jitter > 0:
+            offset = int(world.rng.integers(-int(period * jitter), int(period * jitter) + 1))
+        actual_tick = max(1, t + offset)
+        spawn(world, actual_tick, f"{vid_prefix}_{n}", vtype, route)
         n += 1
         t += period
     return n

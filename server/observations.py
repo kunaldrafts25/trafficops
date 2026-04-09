@@ -7,6 +7,7 @@ from models import (
     IntersectionView,
     MetricsView,
     PlanView,
+    RoadView,
     TrafficOpsObservation,
 )
 
@@ -20,6 +21,7 @@ def build_observation(
     last_action_error: Optional[str],
     final_score: Optional[float] = None,
 ) -> TrafficOpsObservation:
+    roads = [_view_road(world, rid) for rid in sorted(world.roads)]
     intersections = [_view_intersection(world, iid) for iid in sorted(world.intersections)]
     corridors = [_view_corridor(world, cid) for cid in sorted(world.corridors)]
     incidents = [_view_incident(inc) for inc in world.incidents]
@@ -42,6 +44,7 @@ def build_observation(
         tick=world.tick,
         horizon=world.horizon,
         summary=summary,
+        roads=roads,
         intersections=intersections,
         corridors=corridors,
         incidents=incidents,
@@ -57,12 +60,26 @@ def build_observation(
     )
 
 
+def _view_road(world: World, rid: str) -> RoadView:
+    r = world.roads[rid]
+    return RoadView(
+        id=r.id,
+        from_node=r.from_node,
+        to_node=r.to_node,
+        approach_direction=r.approach_direction,
+        length=r.length,
+        occupancy=r.occupancy(),
+        queue_at_stop=r.queue_at_tail(),
+        blocked=r.blocked,
+    )
+
+
 def _view_intersection(world: World, iid: str) -> IntersectionView:
     I = world.intersections[iid]
     queues: dict = {}
     for d in ("N", "S", "E", "W"):
         rid = I.incoming.get(d)  # type: ignore[arg-type]
-        queues[d] = world.roads[rid].occupancy() if rid else 0
+        queues[d] = world.roads[rid].queue_at_tail() if rid else 0
     bias = {d: I.bias.get(d, 1.0) for d in ("N", "S", "E", "W")}  # type: ignore[misc]
     return IntersectionView(
         id=I.id,
@@ -117,6 +134,7 @@ def _view_emergencies(world: World) -> list[EmergencyView]:
         if v.type not in EMERGENCY_TYPES:
             continue
         current_road = v.route[v.route_idx] if v.route_idx < len(v.route) else None
+        remaining = v.route[v.route_idx:] if not v.cleared else []
         eta = _estimate_eta(world, v) if not v.cleared else 0
         out.append(
             EmergencyView(
@@ -125,6 +143,7 @@ def _view_emergencies(world: World) -> list[EmergencyView]:
                 origin=world.roads[v.route[0]].from_node,
                 destination=world.roads[v.route[-1]].to_node,
                 current_road=current_road,
+                remaining_route=remaining,
                 ticks_since_spawn=world.tick - v.spawn_tick,
                 eta_ticks=eta,
                 cleared=v.cleared,
@@ -198,11 +217,22 @@ def _build_summary(
     if active_incs:
         parts = [f"{i.id}({i.kind}) blocks {i.road_id}" for i in active_incs]
         lines.append("INCIDENTS: " + "; ".join(parts))
+        blocked_roads = [r.id for r in world.roads.values() if r.blocked]
+        if blocked_roads:
+            alt_routes = []
+            for rid in blocked_roads:
+                road = world.roads[rid]
+                alts = [r.id for r in world.roads.values()
+                        if r.from_node == road.from_node and r.id != rid and not r.blocked]
+                if alts:
+                    alt_routes.append(f"{rid} alt_from_{road.from_node}=[{','.join(alts)}]")
+            if alt_routes:
+                lines.append("DETOUR_HINTS: " + "; ".join(alt_routes))
 
     live_em = [e for e in emergencies if not e.cleared]
     if live_em:
         parts = [
-            f"{e.id}({e.type}) on {e.current_road} dest={e.destination} eta~{e.eta_ticks}t age={e.ticks_since_spawn}t"
+            f"{e.id}({e.type}) on {e.current_road} route={e.remaining_route} dest={e.destination} eta~{e.eta_ticks}t"
             for e in live_em
         ]
         lines.append("EMERGENCIES: " + "; ".join(parts))
@@ -236,6 +266,13 @@ def _build_summary(
         f"mean_wait={metrics.mean_wait_ticks} max_wait={metrics.max_wait_ticks} "
         f"wasted_green={metrics.wasted_green_ticks} gridlocks={metrics.gridlock_events}"
     )
+
+    if world.tick == 0:
+        topo = []
+        for rid in sorted(world.roads):
+            r = world.roads[rid]
+            topo.append(f"{rid}:{r.from_node}->{r.to_node}(len={r.length})")
+        lines.append("TOPOLOGY: " + " ".join(topo))
 
     recent = world.event_log[-5:]
     if recent:

@@ -115,6 +115,7 @@ class Corridor:
     coordinated: bool = False
     plan_id: Optional[str] = None
     target_speed: Optional[float] = None
+    phase_offsets: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass

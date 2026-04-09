@@ -20,6 +20,7 @@ class TrafficOpsEnvironment(Environment):
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     def __init__(self):
+        super().__init__()
         self._world: Optional[World] = None
         self._state = TrafficOpsState(episode_id=str(uuid4()), step_count=0)
         self._done: bool = False
@@ -125,7 +126,7 @@ class TrafficOpsEnvironment(Environment):
             return True
         if w.tick >= w.horizon:
             return True
-        if w.metrics.gridlock_events > 0:
+        if w.metrics.gridlock_events >= 3:
             return True
         nothing_pending = not w.spawn_schedule and not w.incident_schedule
         no_live = all(v.cleared for v in w.vehicles.values())

@@ -96,6 +96,7 @@ def _revert_plan(world: World, plan: Plan) -> None:
             world.corridors[cid].coordinated = False
             world.corridors[cid].plan_id = None
             world.corridors[cid].target_speed = None
+            world.corridors[cid].phase_offsets = {}
         for iid, prev in plan.snapshot.get("bias", {}).items():
             I = world.intersections.get(iid)
             if I is not None:
@@ -197,17 +198,35 @@ def _op_set_coordination(world: World, action) -> Optional[str]:
     duration = action.params.get("duration_ticks")
     duration_int = int(duration) if duration is not None else None
     snapshot_bias: dict[str, dict] = {}
+    # Compute green-wave offsets: stagger phase starts by road travel time
+    cumulative_offset = 0
+    offsets: dict[str, int] = {}
+    prev_iid = None
     for iid in corridor.intersections:
         I = world.intersections.get(iid)
         if I is None:
             continue
+        offsets[iid] = cumulative_offset
         snapshot_bias[iid] = dict(I.bias)
         new_bias = dict(I.bias)
         if direction in I.incoming:
             new_bias[direction] = max(new_bias.get(direction, 1.0), 1.8)  # type: ignore[index]
         I.bias = new_bias
+        # Find road from this intersection to next for offset calculation
+        if prev_iid is not None:
+            for rid, road in world.roads.items():
+                if road.from_node == prev_iid and road.to_node == iid:
+                    travel_time = int(road.length / max(0.1, target_speed))
+                    cumulative_offset += travel_time
+                    break
+                elif road.from_node == iid and road.to_node == prev_iid:
+                    travel_time = int(road.length / max(0.1, target_speed))
+                    cumulative_offset += travel_time
+                    break
+        prev_iid = iid
     corridor.coordinated = True
     corridor.target_speed = target_speed
+    corridor.phase_offsets = offsets
     plan = _new_plan(
         world,
         "set_coordination",

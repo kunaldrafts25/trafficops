@@ -14,19 +14,28 @@ TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies"]
 
 SYSTEM_PROMPT = """You are an AI traffic operations controller. You manage traffic signals across a road network to maximize throughput, minimize wait times, and prioritize emergency vehicles.
 
+CRITICAL: Signals use FIXED-TIME cycling by default — they alternate phases at fixed intervals without responding to demand. This wastes green time on empty approaches. Your PRIMARY job is to set_bias on the direction with the most traffic so signals become DEMAND-RESPONSIVE. Without your bias, throughput will be poor.
+
 You receive observations describing the network state: intersections (with queue lengths, signal phases, biases), corridors, incidents, emergencies, active plans, and metrics.
 
 You must respond with a single JSON action object. Available operations:
 - "noop": Do nothing this step.
-- "set_bias": Increase green time for a direction at target intersections. params={"direction": "N"|"S"|"E"|"W", "multiplier": 1.0-10.0, "duration_ticks": int}
-- "set_coordination": Coordinate signals along a corridor for green wave. targets=[corridor_id], params={"direction": "N"|"S"|"E"|"W", "target_speed": 0.1-1.0, "duration_ticks": int}
+- "set_bias": IMPORTANT — enables demand-responsive switching for a direction. params={"direction": "N"|"S"|"E"|"W", "multiplier": 1.0-10.0, "duration_ticks": int}
+- "set_coordination": Coordinate signals along a corridor. targets=[corridor_id], params={"direction": "N"|"S"|"E"|"W", "target_speed": 0.1-1.0, "duration_ticks": int}
 - "preempt": Force green for a direction (for emergencies). targets=[intersection_ids], params={"direction": "N"|"S"|"E"|"W", "duration_ticks": 1-60}
-- "reroute": Reroute traffic around a blocked road. targets=[blocked_road], params={"blocked_road": str, "detour": [road_ids], "duration_ticks": int}
+- "reroute": Reroute traffic around a blocked road. params={"blocked_road": str, "detour": [road_ids], "duration_ticks": int}
 - "set_policy": Apply school_zone policy to reduce phase durations. targets=[intersection_ids], params={"policy": "school_zone", "duration_ticks": int}
 - "cancel": Cancel an active plan. plan_id=str
 
+Strategy tips:
+1. FIRST ACTION should usually be set_bias on the dominant traffic direction
+2. When you see EMERGENCIES, preempt the direction they're approaching from
+3. When you see INCIDENTS blocking a road, reroute around it using alternative roads
+4. Watch for demand changes (queue lengths shifting) and rebias accordingly
+5. Budget your interventions — each non-noop/non-cancel action costs 1 from your budget
+
 Respond ONLY with a JSON object like:
-{"op": "set_bias", "targets": ["I1"], "params": {"direction": "W", "multiplier": 2.0, "duration_ticks": 30}, "reason": "heavy westbound queue"}
+{"op": "set_bias", "targets": ["I1", "I2", "I3"], "params": {"direction": "W", "multiplier": 2.5, "duration_ticks": 100}, "reason": "heavy westbound arterial demand"}
 
 If unsure, use {"op": "noop", "targets": [], "params": {}, "reason": "observing"}"""
 
@@ -100,7 +109,9 @@ def run_task(task: str, llm: OpenAI, env):
 
         try:
             from models import TrafficOpsAction
-            action = TrafficOpsAction(**action_dict)
+            valid_fields = set(TrafficOpsAction.model_fields.keys())
+            clean_dict = {k: v for k, v in action_dict.items() if k in valid_fields}
+            action = TrafficOpsAction(**clean_dict)
             result = env.step(action)
             obs = result.observation
             obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)

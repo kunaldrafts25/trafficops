@@ -8,6 +8,7 @@ from .models import (
     EmergencyView,
     PlanView,
     MetricsView,
+    RoadView,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "EmergencyView",
     "PlanView",
     "MetricsView",
+    "RoadView",
 ]
