@@ -31,6 +31,14 @@ def tick(world: World, on_tick_start=None) -> tuple[float, TickStats]:
     _spawn_scheduled(world)
     _expire_preempts(world)
 
+    # DQN controller runs every N ticks (decision interval)
+    if world.controller_mode == "dqn" and world.rl_controller is not None:
+        world.dqn_tick_counter += 1
+        if world.dqn_tick_counter >= world.dqn_decision_interval:
+            world.dqn_tick_counter = 0
+            from .rl_controller import rl_step
+            rl_step(world.rl_controller, world)
+
     for I in world.intersections.values():
         _local_controller_step(I, world, stats)
 
@@ -188,7 +196,6 @@ def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> N
             I.current_phase_idx = best
             I.phase_timer = 0
     elif world.controller_mode == "max_pressure":
-        # Max-Pressure: switch to phase with highest upstream-downstream pressure
         mp: list[float] = []
         for idx, phase in enumerate(I.phases):
             p = 0.0
@@ -204,6 +211,12 @@ def _local_controller_step(I: Intersection, world: World, stats: TickStats) -> N
             I.current_phase_idx = best
             I.phase_timer = 0
         elif I.phase_timer >= I.max_phase_ticks:
+            I.current_phase_idx = (I.current_phase_idx + 1) % len(I.phases)
+            I.phase_timer = 0
+    elif world.controller_mode == "dqn":
+        # DQN controller handles switching externally via rl_step()
+        # Here we just enforce max_phase as safety fallback
+        if I.phase_timer >= I.max_phase_ticks:
             I.current_phase_idx = (I.current_phase_idx + 1) % len(I.phases)
             I.phase_timer = 0
     else:

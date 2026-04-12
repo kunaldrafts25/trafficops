@@ -11,16 +11,14 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies", "rush_hour_surge", "multi_incident_cascade"]
+TASKS = ["grid_balanced", "demand_shift", "incident_corridor", "rush_hour_wave", "multi_crisis"]
 
 MAX_TOTAL_TIME = 17 * 60  # 17 min hard cap (spec says < 20 min)
 MAX_TASK_TIME = 3 * 60    # 3 min per task
 LLM_TIMEOUT = 25          # 25s per LLM call
 MAX_STEPS_PER_TASK = 25
 
-SYSTEM_PROMPT = """You supervise traffic signals across a road network. Your goal: maximize vehicle throughput, minimize wait times, clear emergency vehicles fast.
-
-Each intersection runs a Max-Pressure controller that handles routine phase switching. You add value through NETWORK-LEVEL decisions the local controllers can't make:
+SYSTEM_PROMPT = """You supervise a 4x4 grid of 16 traffic intersections (I_0_0 to I_3_3). Each intersection runs a trained DQN controller that handles routine phase switching. You add value through CITY-LEVEL decisions the local controllers can't make:
 
 ACTIONS (respond with ONE JSON object):
 1. set_bias — Make signals favor a direction. Use when one direction has much heavier traffic.

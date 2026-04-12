@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 
@@ -177,7 +177,10 @@ class World:
     last_action_error: Optional[str] = None
     next_plan_seq: int = 0
     reroute_overrides: dict[str, list[str]] = field(default_factory=dict)
-    controller_mode: str = "fixed"  # "fixed", "max_pressure"
+    controller_mode: str = "dqn"  # "fixed", "max_pressure", "dqn"
+    rl_controller: Any = None
+    dqn_decision_interval: int = 5
+    dqn_tick_counter: int = 0
 
     def log(self, msg: str) -> None:
         self.event_log.append(f"t={self.tick} {msg}")

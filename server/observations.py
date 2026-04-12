@@ -242,17 +242,40 @@ def _build_summary(
     else:
         lines.append("ACTIVE_PLANS: none")
 
-    int_desc = []
-    for iv in intersections:
-        queues = iv.queues
-        qstr = " ".join(f"{d}={queues.get(d,0)}" for d in ("N", "S", "E", "W") if queues.get(d, 0) > 0)
-        tag = iv.current_phase
-        if iv.preempt_direction:
-            tag += f"!preempt={iv.preempt_direction}"
-        bias_tags = [f"{d}x{v:.1f}" for d, v in iv.bias.items() if v != 1.0]
-        bias_str = f" bias=[{','.join(bias_tags)}]" if bias_tags else ""
-        int_desc.append(f"{iv.id}[{tag} q({qstr or '-'}){bias_str}]")
-    lines.append("NETWORK: " + " ".join(int_desc))
+    # Compact grid format for large networks
+    imap = {iv.id: iv for iv in intersections}
+    rows = sorted(set(iv.position[1] for iv in intersections), reverse=True)
+    cols = sorted(set(iv.position[0] for iv in intersections))
+    if len(intersections) > 6:
+        grid_lines = ["GRID (phase S_queue/W_queue):"]
+        for r in rows:
+            cells = []
+            for c in cols:
+                matching = [iv for iv in intersections if iv.position == (c, r) or iv.position == [c, r]]
+                if not matching:
+                    cells.append("  ---  ")
+                    continue
+                iv = matching[0]
+                ph = "NS" if "N" in iv.current_phase else "EW"
+                if iv.preempt_direction:
+                    ph = f"!{iv.preempt_direction}"
+                sq = iv.queues.get("S", 0)
+                wq = iv.queues.get("W", 0)
+                cells.append(f"[{ph} {sq}/{wq}]")
+            grid_lines.append("  " + " ".join(cells))
+        lines.append("\n".join(grid_lines))
+    else:
+        int_desc = []
+        for iv in intersections:
+            queues = iv.queues
+            qstr = " ".join(f"{d}={queues.get(d,0)}" for d in ("N", "S", "E", "W") if queues.get(d, 0) > 0)
+            tag = iv.current_phase
+            if iv.preempt_direction:
+                tag += f"!preempt={iv.preempt_direction}"
+            bias_tags = [f"{d}x{v:.1f}" for d, v in iv.bias.items() if v != 1.0]
+            bias_str = f" bias=[{','.join(bias_tags)}]" if bias_tags else ""
+            int_desc.append(f"{iv.id}[{tag} q({qstr or '-'}){bias_str}]")
+        lines.append("NETWORK: " + " ".join(int_desc))
 
     lines.append(
         f"METRICS: cleared_civ={metrics.cleared_civilian}/{metrics.spawned_civilian} "
@@ -262,11 +285,16 @@ def _build_summary(
     )
 
     if world.tick == 0:
-        topo = []
-        for rid in sorted(world.roads):
-            r = world.roads[rid]
-            topo.append(f"{rid}:{r.from_node}->{r.to_node}(len={r.length})")
-        lines.append("TOPOLOGY: " + " ".join(topo))
+        if len(world.roads) <= 15:
+            topo = []
+            for rid in sorted(world.roads):
+                r = world.roads[rid]
+                topo.append(f"{rid}:{r.from_node}->{r.to_node}(len={r.length})")
+            lines.append("TOPOLOGY: " + " ".join(topo))
+        else:
+            lines.append(f"GRID: {len(world.intersections)} intersections, {len(world.roads)} roads")
+            lines.append("Road naming: R_h_{{row}}_{{col}} (horizontal W->E), R_v_{{row}}_{{col}} (vertical S->N)")
+            lines.append("Corridors: ew_row_0..3 (east-west), ns_col_0..3 (north-south)")
 
     recent = world.event_log[-5:]
     if recent:

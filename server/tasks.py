@@ -11,16 +11,23 @@ from .sim.builders import (
     spawn_stream,
     wire,
 )
+from .sim.rl_controller import get_controller
 from .sim.world import World
 
 
 TASK_IDS = [
-    "single_corridor",
-    "asymmetric_network",
-    "incident_and_emergencies",
-    "rush_hour_surge",
-    "multi_incident_cascade",
+    "grid_balanced",
+    "demand_shift",
+    "incident_corridor",
+    "rush_hour_wave",
+    "multi_crisis",
 ]
+
+GRID_ROWS = 4
+GRID_COLS = 4
+ROAD_LEN = 8
+SOURCE_LEN = 6
+SINK_LEN = 5
 
 
 def build(task: str, seed: int) -> World:
@@ -30,344 +37,206 @@ def build(task: str, seed: int) -> World:
     return builder(seed)
 
 
-def _build_single_corridor(seed: int) -> World:
-    horizon = 200
-    w = new_world("single_corridor", horizon=horizon, seed=seed, interventions_budget=5)
+def _iid(r: int, c: int) -> str:
+    return f"I_{r}_{c}"
 
-    for i, x in enumerate([0, 1, 2], start=1):
-        add_intersection(w, f"I{i}", position=(x, 0), min_phase_ticks=8, max_phase_ticks=22)
 
-    # Long inter-intersection roads → platoon coordination matters
-    arterial_len = 10
-    source_len = 6
-    sink_len = 5
+def _build_grid(
+    task: str,
+    seed: int,
+    horizon: int,
+    budget: int,
+) -> World:
+    w = new_world(task, horizon=horizon, seed=seed, interventions_budget=budget, controller_mode="dqn")
+    w.rl_controller = get_controller()
 
-    add_road(w, "R_W_I1", "SRC_W", "I1", approach="W", length=source_len)
-    add_road(w, "R_I1_I2", "I1", "I2", approach="W", length=arterial_len)
-    add_road(w, "R_I2_I3", "I2", "I3", approach="W", length=arterial_len)
-    add_road(w, "R_I3_E", "I3", "SINK_E", approach="W", length=sink_len)
+    for r in range(GRID_ROWS):
+        for c in range(GRID_COLS):
+            add_intersection(w, _iid(r, c), position=(c, r), min_phase_ticks=6, max_phase_ticks=45)
 
-    for iid in ("I1", "I2", "I3"):
-        add_road(w, f"R_N_{iid}", f"SRC_N_{iid}", iid, approach="N", length=source_len)
-        add_road(w, f"R_{iid}_S", iid, f"SINK_S_{iid}", approach="N", length=sink_len)
+    # Horizontal roads (west→east), approach direction W
+    for r in range(GRID_ROWS):
+        add_road(w, f"R_src_W_{r}", f"SRC_W_{r}", _iid(r, 0), approach="W", length=SOURCE_LEN)
+        for c in range(GRID_COLS - 1):
+            add_road(w, f"R_h_{r}_{c}", _iid(r, c), _iid(r, c + 1), approach="W", length=ROAD_LEN)
+        add_road(w, f"R_sink_E_{r}", _iid(r, GRID_COLS - 1), f"SINK_E_{r}", approach="W", length=SINK_LEN)
 
-    wire(w, "I1",
-         incoming={"W": "R_W_I1", "N": "R_N_I1"},
-         outgoing={"E": "R_I1_I2", "S": "R_I1_S"})
-    wire(w, "I2",
-         incoming={"W": "R_I1_I2", "N": "R_N_I2"},
-         outgoing={"E": "R_I2_I3", "S": "R_I2_S"})
-    wire(w, "I3",
-         incoming={"W": "R_I2_I3", "N": "R_N_I3"},
-         outgoing={"E": "R_I3_E", "S": "R_I3_S"})
+    # Vertical roads (south→north), approach direction S
+    for c in range(GRID_COLS):
+        add_road(w, f"R_src_S_{c}", f"SRC_S_{c}", _iid(0, c), approach="S", length=SOURCE_LEN)
+        for r in range(GRID_ROWS - 1):
+            add_road(w, f"R_v_{r}_{c}", _iid(r, c), _iid(r + 1, c), approach="S", length=ROAD_LEN)
+        add_road(w, f"R_sink_N_{c}", _iid(GRID_ROWS - 1, c), f"SINK_N_{c}", approach="S", length=SINK_LEN)
+
+    # Wire each intersection
+    for r in range(GRID_ROWS):
+        for c in range(GRID_COLS):
+            inc = {}
+            out = {}
+            inc["W"] = f"R_src_W_{r}" if c == 0 else f"R_h_{r}_{c - 1}"
+            out["E"] = f"R_sink_E_{r}" if c == GRID_COLS - 1 else f"R_h_{r}_{c}"
+            inc["S"] = f"R_src_S_{c}" if r == 0 else f"R_v_{r - 1}_{c}"
+            out["N"] = f"R_sink_N_{c}" if r == GRID_ROWS - 1 else f"R_v_{r}_{c}"
+            wire(w, _iid(r, c), incoming=inc, outgoing=out)
 
     connect_neighbors(w)
-    add_corridor(w, "corridor_east", intersections=["I1", "I2", "I3"], direction="W")
 
-    arterial_route = ["R_W_I1", "R_I1_I2", "R_I2_I3", "R_I3_E"]
-    spawn_stream(w, start_tick=2, end_tick=horizon - 20, period=3,
-                 vid_prefix="ART", vtype="civilian", route=arterial_route, jitter=0.3)
-
-    for iid in ("I1", "I2", "I3"):
-        route = [f"R_N_{iid}", f"R_{iid}_S"]
-        spawn_stream(w, start_tick=5, end_tick=horizon - 20, period=10,
-                     vid_prefix=f"CROSS_{iid}", vtype="civilian", route=route, jitter=0.3)
-
-    # Emergency crosses arterial — stochastic timing
-    amb_tick = 70 + int(w.rng.integers(0, 30))
-    spawn(w, at_tick=amb_tick, vid="AMB_1", vtype="ambulance",
-          route=["R_N_I2", "R_I2_S"])
+    # Corridors
+    for r in range(GRID_ROWS):
+        add_corridor(w, f"ew_row_{r}", [_iid(r, c) for c in range(GRID_COLS)], direction="W")
+    for c in range(GRID_COLS):
+        add_corridor(w, f"ns_col_{c}", [_iid(r, c) for r in range(GRID_ROWS)], direction="S")
 
     return w
 
 
-def _build_asymmetric_network(seed: int) -> World:
-    horizon = 260
-    w = new_world("asymmetric_network", horizon=horizon, seed=seed, interventions_budget=6)
+def _ew_route(row: int) -> list[str]:
+    route = [f"R_src_W_{row}"]
+    for c in range(GRID_COLS - 1):
+        route.append(f"R_h_{row}_{c}")
+    route.append(f"R_sink_E_{row}")
+    return route
 
-    positions = {"I1": (0, 1), "I2": (1, 1), "I3": (0, 0), "I4": (1, 0)}
-    for iid, pos in positions.items():
-        add_intersection(w, iid, position=pos, min_phase_ticks=8, max_phase_ticks=22)
 
-    seg = 7
-    src = 6
-    snk = 5
+def _ns_route(col: int) -> list[str]:
+    route = [f"R_src_S_{col}"]
+    for r in range(GRID_ROWS - 1):
+        route.append(f"R_v_{r}_{col}")
+    route.append(f"R_sink_N_{col}")
+    return route
 
-    add_road(w, "R_SW_I3", "SRC_SW", "I3", approach="S", length=src)
-    add_road(w, "R_SE_I4", "SRC_SE", "I4", approach="S", length=src)
-    add_road(w, "R_I3_I1", "I3", "I1", approach="S", length=seg)
-    add_road(w, "R_I4_I2", "I4", "I2", approach="S", length=seg)
-    add_road(w, "R_I1_N", "I1", "SINK_N1", approach="S", length=snk)
-    add_road(w, "R_I2_N", "I2", "SINK_N2", approach="S", length=snk)
 
-    add_road(w, "R_WW_I1", "SRC_WW1", "I1", approach="W", length=src)
-    add_road(w, "R_WW_I3", "SRC_WW3", "I3", approach="W", length=src)
-    add_road(w, "R_I1_I2", "I1", "I2", approach="W", length=seg)
-    add_road(w, "R_I3_I4", "I3", "I4", approach="W", length=seg)
-    add_road(w, "R_I2_E", "I2", "SINK_E2", approach="W", length=snk)
-    add_road(w, "R_I4_E", "I4", "SINK_E4", approach="W", length=snk)
+# ── Task 1: grid_balanced (Easy) ─────────────────────────────────────────
+def _build_grid_balanced(seed: int) -> World:
+    w = _build_grid("grid_balanced", seed, horizon=250, budget=6)
 
-    wire(w, "I3",
-         incoming={"S": "R_SW_I3", "W": "R_WW_I3"},
-         outgoing={"N": "R_I3_I1", "E": "R_I3_I4"})
-    wire(w, "I4",
-         incoming={"S": "R_SE_I4", "W": "R_I3_I4"},
-         outgoing={"N": "R_I4_I2", "E": "R_I4_E"})
-    wire(w, "I1",
-         incoming={"S": "R_I3_I1", "W": "R_WW_I1"},
-         outgoing={"N": "R_I1_N", "E": "R_I1_I2"})
-    wire(w, "I2",
-         incoming={"S": "R_I4_I2", "W": "R_I1_I2"},
-         outgoing={"N": "R_I2_N", "E": "R_I2_E"})
+    for r in range(GRID_ROWS):
+        spawn_stream(w, 2 + r, w.horizon - 30, 7, f"EW_{r}", "civilian", _ew_route(r), jitter=0.3)
+    for c in range(GRID_COLS):
+        spawn_stream(w, 4 + c, w.horizon - 30, 9, f"NS_{c}", "civilian", _ns_route(c), jitter=0.3)
 
-    connect_neighbors(w)
-    add_corridor(w, "arterial_north_west", intersections=["I3", "I1"], direction="S")
-    add_corridor(w, "arterial_north_east", intersections=["I4", "I2"], direction="S")
-    add_corridor(w, "arterial_east_north", intersections=["I1", "I2"], direction="W")
-    add_corridor(w, "arterial_east_south", intersections=["I3", "I4"], direction="W")
-
-    phase_a_end = 140
-
-    spawn_stream(w, 2, phase_a_end, 2, "NA_W", "civilian", ["R_SW_I3", "R_I3_I1", "R_I1_N"], jitter=0.25)
-    spawn_stream(w, 3, phase_a_end, 2, "NA_E", "civilian", ["R_SE_I4", "R_I4_I2", "R_I2_N"], jitter=0.25)
-    spawn_stream(w, 6, phase_a_end, 30, "XA_N", "civilian", ["R_WW_I1", "R_I1_I2", "R_I2_E"], jitter=0.3)
-    spawn_stream(w, 8, phase_a_end, 30, "XA_S", "civilian", ["R_WW_I3", "R_I3_I4", "R_I4_E"], jitter=0.3)
-
-    spawn_stream(w, phase_a_end, horizon - 20, 30, "NB_W", "civilian", ["R_SW_I3", "R_I3_I1", "R_I1_N"], jitter=0.3)
-    spawn_stream(w, phase_a_end + 1, horizon - 20, 30, "NB_E", "civilian", ["R_SE_I4", "R_I4_I2", "R_I2_N"], jitter=0.3)
-    spawn_stream(w, phase_a_end + 2, horizon - 20, 2, "EB_N", "civilian", ["R_WW_I1", "R_I1_I2", "R_I2_E"], jitter=0.25)
-    spawn_stream(w, phase_a_end + 3, horizon - 20, 2, "EB_S", "civilian", ["R_WW_I3", "R_I3_I4", "R_I4_E"], jitter=0.25)
-
-    # Emergency during demand flip — stochastic timing
-    amb_tick = phase_a_end + int(w.rng.integers(5, 25))
-    spawn(w, at_tick=amb_tick, vid="AMB_1", vtype="ambulance",
-          route=["R_SW_I3", "R_I3_I1", "R_I1_N"])
+    # One ambulance crossing east-west through the middle
+    amb_tick = 80 + int(w.rng.integers(0, 30))
+    spawn(w, amb_tick, "AMB_1", "ambulance", _ew_route(1))
 
     return w
 
 
-def _build_incident_and_emergencies(seed: int) -> World:
-    horizon = 280
-    w = new_world("incident_and_emergencies", horizon=horizon, seed=seed, interventions_budget=8)
+# ── Task 2: demand_shift (Medium) ────────────────────────────────────────
+def _build_demand_shift(seed: int) -> World:
+    w = _build_grid("demand_shift", seed, horizon=300, budget=6)
 
-    positions = {"I1": (0, 1), "I2": (1, 1), "I3": (0, 0), "I4": (1, 0)}
-    for iid, pos in positions.items():
-        add_intersection(w, iid, position=pos, min_phase_ticks=8, max_phase_ticks=22)
+    flip_tick = 140 + int(w.rng.integers(0, 20))
 
-    seg = 7
-    src = 6
-    snk = 5
+    # Phase A: heavy north-south, light east-west
+    for c in range(GRID_COLS):
+        spawn_stream(w, 2 + c, flip_tick, 4, f"NS_A_{c}", "civilian", _ns_route(c), jitter=0.25)
+    for r in range(GRID_ROWS):
+        spawn_stream(w, 4 + r, flip_tick, 18, f"EW_A_{r}", "civilian", _ew_route(r), jitter=0.3)
 
-    add_road(w, "R_S_I3", "SRC_S3", "I3", approach="S", length=src)
-    add_road(w, "R_S_I4", "SRC_S4", "I4", approach="S", length=src)
-    add_road(w, "R_I3_I1", "I3", "I1", approach="S", length=seg)
-    add_road(w, "R_I4_I2", "I4", "I2", approach="S", length=seg)
-    add_road(w, "R_I1_N", "I1", "SINK_N1", approach="S", length=snk)
-    add_road(w, "R_I2_N", "I2", "SINK_N2", approach="S", length=snk)
+    # Phase B: demand flips — heavy east-west, light north-south
+    for r in range(GRID_ROWS):
+        spawn_stream(w, flip_tick, w.horizon - 30, 4, f"EW_B_{r}", "civilian", _ew_route(r), jitter=0.25)
+    for c in range(GRID_COLS):
+        spawn_stream(w, flip_tick, w.horizon - 30, 18, f"NS_B_{c}", "civilian", _ns_route(c), jitter=0.3)
 
-    add_road(w, "R_W_I1", "SRC_W1", "I1", approach="W", length=src)
-    add_road(w, "R_W_I3", "SRC_W3", "I3", approach="W", length=src)
-    add_road(w, "R_I1_I2", "I1", "I2", approach="W", length=seg)
-    add_road(w, "R_I3_I4", "I3", "I4", approach="W", length=seg)
-    add_road(w, "R_I2_E", "I2", "SINK_E2", approach="W", length=snk)
-    add_road(w, "R_I4_E", "I4", "SINK_E4", approach="W", length=snk)
-
-    add_road(w, "R_I1_I3", "I1", "I3", approach="N", length=seg)
-    add_road(w, "R_I2_I4", "I2", "I4", approach="N", length=seg)
-
-    wire(w, "I3",
-         incoming={"S": "R_S_I3", "W": "R_W_I3", "N": "R_I1_I3"},
-         outgoing={"N": "R_I3_I1", "E": "R_I3_I4"})
-    wire(w, "I4",
-         incoming={"S": "R_S_I4", "W": "R_I3_I4", "N": "R_I2_I4"},
-         outgoing={"N": "R_I4_I2", "E": "R_I4_E"})
-    wire(w, "I1",
-         incoming={"S": "R_I3_I1", "W": "R_W_I1"},
-         outgoing={"N": "R_I1_N", "E": "R_I1_I2", "S": "R_I1_I3"})
-    wire(w, "I2",
-         incoming={"S": "R_I4_I2", "W": "R_I1_I2"},
-         outgoing={"N": "R_I2_N", "E": "R_I2_E", "S": "R_I2_I4"})
-
-    connect_neighbors(w)
-    add_corridor(w, "arterial_north_west", intersections=["I3", "I1"], direction="S")
-    add_corridor(w, "arterial_north_east", intersections=["I4", "I2"], direction="S")
-    add_corridor(w, "arterial_east_north", intersections=["I1", "I2"], direction="W")
-    add_corridor(w, "arterial_east_south", intersections=["I3", "I4"], direction="W")
-
-    spawn_stream(w, 2, horizon - 40, 8, "CIV_N1", "civilian", ["R_S_I3", "R_I3_I1", "R_I1_N"], jitter=0.3)
-    spawn_stream(w, 4, horizon - 40, 9, "CIV_N2", "civilian", ["R_S_I4", "R_I4_I2", "R_I2_N"], jitter=0.3)
-    spawn_stream(w, 6, horizon - 40, 9, "CIV_E1", "civilian", ["R_W_I1", "R_I1_I2", "R_I2_E"], jitter=0.3)
-    spawn_stream(w, 8, horizon - 40, 10, "CIV_E2", "civilian", ["R_W_I3", "R_I3_I4", "R_I4_E"], jitter=0.3)
-
-    # Stochastic incident timing
-    inc_tick = 50 + int(w.rng.integers(0, 20))
-    inc_end = inc_tick + 150 + int(w.rng.integers(0, 40))
-    schedule_incident(w, at_tick=inc_tick, incident_id="INC_1",
-                      road_id="R_I1_I2", kind="accident", end_tick=inc_end)
-
-    # Staggered emergencies — routes through blocked area need reroute
-    amb_tick = inc_tick + 25 + int(w.rng.integers(0, 15))
-    spawn(w, at_tick=amb_tick, vid="AMB_1", vtype="ambulance",
-          route=["R_S_I3", "R_I3_I1", "R_I1_I2", "R_I2_E"])
-
-    fire_tick = amb_tick + 35 + int(w.rng.integers(0, 20))
-    spawn(w, at_tick=fire_tick, vid="FIRE_1", vtype="fire",
-          route=["R_S_I4", "R_I4_I2", "R_I2_N"])
-
-    police_tick = fire_tick + 30 + int(w.rng.integers(0, 15))
-    spawn(w, at_tick=police_tick, vid="POLICE_1", vtype="police",
-          route=["R_W_I1", "R_I1_I2", "R_I2_E"])
+    # Ambulance during transition
+    amb_tick = flip_tick + int(w.rng.integers(5, 20))
+    spawn(w, amb_tick, "AMB_1", "ambulance", _ns_route(2))
 
     return w
 
 
-def _build_rush_hour_surge(seed: int) -> World:
-    horizon = 240
-    w = new_world("rush_hour_surge", horizon=horizon, seed=seed, interventions_budget=6)
+# ── Task 3: incident_corridor (Hard) ─────────────────────────────────────
+def _build_incident_corridor(seed: int) -> World:
+    w = _build_grid("incident_corridor", seed, horizon=280, budget=8)
 
-    positions = {"I1": (0, 1), "I2": (1, 1), "I3": (0, 0), "I4": (1, 0)}
-    for iid, pos in positions.items():
-        add_intersection(w, iid, position=pos, min_phase_ticks=8, max_phase_ticks=22)
+    for r in range(GRID_ROWS):
+        spawn_stream(w, 2 + r, w.horizon - 30, 8, f"EW_{r}", "civilian", _ew_route(r), jitter=0.3)
+    for c in range(GRID_COLS):
+        spawn_stream(w, 4 + c, w.horizon - 30, 9, f"NS_{c}", "civilian", _ns_route(c), jitter=0.3)
 
-    seg = 6
-    src = 5
-    snk = 4
+    # Incident blocks row 1 mid-corridor
+    inc_tick = 50 + int(w.rng.integers(0, 15))
+    inc_end = inc_tick + 150 + int(w.rng.integers(0, 30))
+    schedule_incident(w, inc_tick, "INC_1", "R_h_1_1", "accident", inc_end)
 
-    add_road(w, "R_S_I3", "SRC_S3", "I3", approach="S", length=src)
-    add_road(w, "R_S_I4", "SRC_S4", "I4", approach="S", length=src)
-    add_road(w, "R_I3_I1", "I3", "I1", approach="S", length=seg)
-    add_road(w, "R_I4_I2", "I4", "I2", approach="S", length=seg)
-    add_road(w, "R_I1_N", "I1", "SINK_N1", approach="S", length=snk)
-    add_road(w, "R_I2_N", "I2", "SINK_N2", approach="S", length=snk)
+    # Ambulance whose route goes through blocked road
+    amb_tick = inc_tick + 20 + int(w.rng.integers(0, 10))
+    spawn(w, amb_tick, "AMB_1", "ambulance", _ew_route(1))
 
-    add_road(w, "R_W_I1", "SRC_W1", "I1", approach="W", length=src)
-    add_road(w, "R_W_I3", "SRC_W3", "I3", approach="W", length=src)
-    add_road(w, "R_I1_I2", "I1", "I2", approach="W", length=seg)
-    add_road(w, "R_I3_I4", "I3", "I4", approach="W", length=seg)
-    add_road(w, "R_I2_E", "I2", "SINK_E2", approach="W", length=snk)
-    add_road(w, "R_I4_E", "I4", "SINK_E4", approach="W", length=snk)
+    # Fire truck on north-south (doesn't hit incident but needs preempt)
+    fire_tick = inc_tick + 60 + int(w.rng.integers(0, 20))
+    spawn(w, fire_tick, "FIRE_1", "fire", _ns_route(3))
 
-    wire(w, "I3",
-         incoming={"S": "R_S_I3", "W": "R_W_I3"},
-         outgoing={"N": "R_I3_I1", "E": "R_I3_I4"})
-    wire(w, "I4",
-         incoming={"S": "R_S_I4", "W": "R_I3_I4"},
-         outgoing={"N": "R_I4_I2", "E": "R_I4_E"})
-    wire(w, "I1",
-         incoming={"S": "R_I3_I1", "W": "R_W_I1"},
-         outgoing={"N": "R_I1_N", "E": "R_I1_I2"})
-    wire(w, "I2",
-         incoming={"S": "R_I4_I2", "W": "R_I1_I2"},
-         outgoing={"N": "R_I2_N", "E": "R_I2_E"})
+    return w
 
-    connect_neighbors(w)
-    add_corridor(w, "arterial_north", intersections=["I3", "I1"], direction="S")
-    add_corridor(w, "arterial_east", intersections=["I1", "I2"], direction="W")
 
-    surge_tick = 100 + int(w.rng.integers(0, 20))
+# ── Task 4: rush_hour_wave (Hard) ────────────────────────────────────────
+def _build_rush_hour_wave(seed: int) -> World:
+    w = _build_grid("rush_hour_wave", seed, horizon=280, budget=8)
+
+    surge_tick = 90 + int(w.rng.integers(0, 20))
 
     # Phase 1: light balanced traffic
-    spawn_stream(w, 2, surge_tick, 12, "LN1", "civilian", ["R_S_I3", "R_I3_I1", "R_I1_N"], jitter=0.3)
-    spawn_stream(w, 4, surge_tick, 12, "LN2", "civilian", ["R_S_I4", "R_I4_I2", "R_I2_N"], jitter=0.3)
-    spawn_stream(w, 6, surge_tick, 14, "LE1", "civilian", ["R_W_I1", "R_I1_I2", "R_I2_E"], jitter=0.3)
-    spawn_stream(w, 8, surge_tick, 14, "LE2", "civilian", ["R_W_I3", "R_I3_I4", "R_I4_E"], jitter=0.3)
+    for r in range(GRID_ROWS):
+        spawn_stream(w, 2 + r, surge_tick, 14, f"EW_L_{r}", "civilian", _ew_route(r), jitter=0.3)
+    for c in range(GRID_COLS):
+        spawn_stream(w, 4 + c, surge_tick, 14, f"NS_L_{c}", "civilian", _ns_route(c), jitter=0.3)
 
-    # Phase 2: demand doubles suddenly on ALL directions — rush hour hits
-    spawn_stream(w, surge_tick, horizon - 20, 4, "HN1", "civilian", ["R_S_I3", "R_I3_I1", "R_I1_N"], jitter=0.3)
-    spawn_stream(w, surge_tick, horizon - 20, 4, "HN2", "civilian", ["R_S_I4", "R_I4_I2", "R_I2_N"], jitter=0.3)
-    spawn_stream(w, surge_tick, horizon - 20, 5, "HE1", "civilian", ["R_W_I1", "R_I1_I2", "R_I2_E"], jitter=0.3)
-    spawn_stream(w, surge_tick, horizon - 20, 5, "HE2", "civilian", ["R_W_I3", "R_I3_I4", "R_I4_E"], jitter=0.3)
+    # Phase 2: demand triples from the south — wave ripples north
+    for c in range(GRID_COLS):
+        spawn_stream(w, surge_tick, w.horizon - 30, 3, f"NS_H_{c}", "civilian", _ns_route(c), jitter=0.25)
+    # East-west stays moderate
+    for r in range(GRID_ROWS):
+        spawn_stream(w, surge_tick, w.horizon - 30, 10, f"EW_H_{r}", "civilian", _ew_route(r), jitter=0.3)
 
-    # Emergency during peak chaos
-    amb_tick = surge_tick + 20 + int(w.rng.integers(0, 15))
-    spawn(w, at_tick=amb_tick, vid="AMB_1", vtype="ambulance",
-          route=["R_W_I1", "R_I1_I2", "R_I2_E"])
+    # Police car during peak
+    pol_tick = surge_tick + 30 + int(w.rng.integers(0, 20))
+    spawn(w, pol_tick, "POLICE_1", "police", _ew_route(2))
 
     return w
 
 
-def _build_multi_incident_cascade(seed: int) -> World:
-    horizon = 300
-    w = new_world("multi_incident_cascade", horizon=horizon, seed=seed, interventions_budget=10)
+# ── Task 5: multi_crisis (Expert) ────────────────────────────────────────
+def _build_multi_crisis(seed: int) -> World:
+    w = _build_grid("multi_crisis", seed, horizon=320, budget=12)
 
-    positions = {"I1": (0, 1), "I2": (1, 1), "I3": (0, 0), "I4": (1, 0)}
-    for iid, pos in positions.items():
-        add_intersection(w, iid, position=pos, min_phase_ticks=8, max_phase_ticks=22)
+    # Moderate asymmetric traffic (heavier east-west)
+    for r in range(GRID_ROWS):
+        spawn_stream(w, 2 + r, w.horizon - 40, 6, f"EW_{r}", "civilian", _ew_route(r), jitter=0.3)
+    for c in range(GRID_COLS):
+        spawn_stream(w, 4 + c, w.horizon - 40, 10, f"NS_{c}", "civilian", _ns_route(c), jitter=0.3)
 
-    seg = 7
-    src = 6
-    snk = 5
+    # Incident 1: blocks row 0 at tick ~50
+    inc1_tick = 45 + int(w.rng.integers(0, 15))
+    inc1_end = inc1_tick + 120 + int(w.rng.integers(0, 30))
+    schedule_incident(w, inc1_tick, "INC_1", "R_h_0_1", "accident", inc1_end)
 
-    add_road(w, "R_S_I3", "SRC_S3", "I3", approach="S", length=src)
-    add_road(w, "R_S_I4", "SRC_S4", "I4", approach="S", length=src)
-    add_road(w, "R_I3_I1", "I3", "I1", approach="S", length=seg)
-    add_road(w, "R_I4_I2", "I4", "I2", approach="S", length=seg)
-    add_road(w, "R_I1_N", "I1", "SINK_N1", approach="S", length=snk)
-    add_road(w, "R_I2_N", "I2", "SINK_N2", approach="S", length=snk)
+    # Incident 2: blocks column 2 at tick ~130
+    inc2_tick = 120 + int(w.rng.integers(0, 20))
+    inc2_end = inc2_tick + 100 + int(w.rng.integers(0, 20))
+    schedule_incident(w, inc2_tick, "INC_2", "R_v_2_2", "construction", inc2_end)
 
-    add_road(w, "R_W_I1", "SRC_W1", "I1", approach="W", length=src)
-    add_road(w, "R_W_I3", "SRC_W3", "I3", approach="W", length=src)
-    add_road(w, "R_I1_I2", "I1", "I2", approach="W", length=seg)
-    add_road(w, "R_I3_I4", "I3", "I4", approach="W", length=seg)
-    add_road(w, "R_I2_E", "I2", "SINK_E2", approach="W", length=snk)
-    add_road(w, "R_I4_E", "I4", "SINK_E4", approach="W", length=snk)
-
-    # Bidirectional links for detour routes
-    add_road(w, "R_I1_I3", "I1", "I3", approach="N", length=seg)
-    add_road(w, "R_I2_I4", "I2", "I4", approach="N", length=seg)
-
-    wire(w, "I3",
-         incoming={"S": "R_S_I3", "W": "R_W_I3", "N": "R_I1_I3"},
-         outgoing={"N": "R_I3_I1", "E": "R_I3_I4"})
-    wire(w, "I4",
-         incoming={"S": "R_S_I4", "W": "R_I3_I4", "N": "R_I2_I4"},
-         outgoing={"N": "R_I4_I2", "E": "R_I4_E"})
-    wire(w, "I1",
-         incoming={"S": "R_I3_I1", "W": "R_W_I1"},
-         outgoing={"N": "R_I1_N", "E": "R_I1_I2", "S": "R_I1_I3"})
-    wire(w, "I2",
-         incoming={"S": "R_I4_I2", "W": "R_I1_I2"},
-         outgoing={"N": "R_I2_N", "E": "R_I2_E", "S": "R_I2_I4"})
-
-    connect_neighbors(w)
-    add_corridor(w, "arterial_north", intersections=["I3", "I1"], direction="S")
-    add_corridor(w, "arterial_east", intersections=["I3", "I4"], direction="W")
-
-    # Steady traffic from all directions
-    spawn_stream(w, 2, horizon - 40, 7, "CIV_N1", "civilian", ["R_S_I3", "R_I3_I1", "R_I1_N"], jitter=0.3)
-    spawn_stream(w, 4, horizon - 40, 8, "CIV_N2", "civilian", ["R_S_I4", "R_I4_I2", "R_I2_N"], jitter=0.3)
-    spawn_stream(w, 6, horizon - 40, 8, "CIV_E1", "civilian", ["R_W_I1", "R_I1_I2", "R_I2_E"], jitter=0.3)
-    spawn_stream(w, 8, horizon - 40, 9, "CIV_E2", "civilian", ["R_W_I3", "R_I3_I4", "R_I4_E"], jitter=0.3)
-
-    # Incident 1: blocks eastbound I1->I2 early
-    inc1_tick = 60 + int(w.rng.integers(0, 15))
-    inc1_end = inc1_tick + 100 + int(w.rng.integers(0, 30))
-    schedule_incident(w, at_tick=inc1_tick, incident_id="INC_1",
-                      road_id="R_I1_I2", kind="accident", end_tick=inc1_end)
-
-    # Incident 2: blocks northbound I3->I1 later — cascading congestion
-    inc2_tick = inc1_tick + 60 + int(w.rng.integers(0, 20))
-    inc2_end = inc2_tick + 80 + int(w.rng.integers(0, 20))
-    schedule_incident(w, at_tick=inc2_tick, incident_id="INC_2",
-                      road_id="R_I3_I1", kind="construction", end_tick=inc2_end)
-
-    # Emergency 1: needs reroute around INC_1
+    # Emergency 1: ambulance through incident 1 zone
     amb_tick = inc1_tick + 20 + int(w.rng.integers(0, 10))
-    spawn(w, at_tick=amb_tick, vid="AMB_1", vtype="ambulance",
-          route=["R_W_I1", "R_I1_I2", "R_I2_E"])
+    spawn(w, amb_tick, "AMB_1", "ambulance", _ew_route(0))
 
-    # Emergency 2: needs reroute around INC_2
+    # Emergency 2: fire truck through incident 2 zone
     fire_tick = inc2_tick + 15 + int(w.rng.integers(0, 10))
-    spawn(w, at_tick=fire_tick, vid="FIRE_1", vtype="fire",
-          route=["R_S_I3", "R_I3_I1", "R_I1_N"])
+    spawn(w, fire_tick, "FIRE_1", "fire", _ns_route(2))
+
+    # Emergency 3: police car diagonal route (late)
+    pol_tick = fire_tick + 40 + int(w.rng.integers(0, 15))
+    spawn(w, pol_tick, "POLICE_1", "police", _ew_route(3))
 
     return w
 
 
 _BUILDERS: dict[str, Callable[[int], World]] = {
-    "single_corridor": _build_single_corridor,
-    "asymmetric_network": _build_asymmetric_network,
-    "incident_and_emergencies": _build_incident_and_emergencies,
-    "rush_hour_surge": _build_rush_hour_surge,
-    "multi_incident_cascade": _build_multi_incident_cascade,
+    "grid_balanced": _build_grid_balanced,
+    "demand_shift": _build_demand_shift,
+    "incident_corridor": _build_incident_corridor,
+    "rush_hour_wave": _build_rush_hour_wave,
+    "multi_crisis": _build_multi_crisis,
 }

@@ -16,11 +16,11 @@ ActionOp = Literal[
 
 Direction = Literal["N", "S", "E", "W"]
 TaskId = Literal[
-    "single_corridor",
-    "asymmetric_network",
-    "incident_and_emergencies",
-    "rush_hour_surge",
-    "multi_incident_cascade",
+    "grid_balanced",
+    "demand_shift",
+    "incident_corridor",
+    "rush_hour_wave",
+    "multi_crisis",
 ]
 
 

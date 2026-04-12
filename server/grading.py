@@ -120,45 +120,45 @@ RUBRIC_CLASSES = {
 }
 
 TASK_WEIGHTS: dict[str, dict[str, float]] = {
-    "single_corridor": {
+    "grid_balanced": {
         "throughput": 0.40,
         "emergency": 0.15,
         "fairness": 0.15,
-        "efficiency": 0.20,
+        "efficiency": 0.15,
         "planning": 0.05,
-        "safety": 0.05,
+        "safety": 0.10,
     },
-    "asymmetric_network": {
+    "demand_shift": {
         "throughput": 0.35,
-        "emergency": 0.15,
+        "emergency": 0.10,
         "fairness": 0.20,
         "efficiency": 0.15,
         "planning": 0.10,
-        "safety": 0.05,
+        "safety": 0.10,
     },
-    "incident_and_emergencies": {
+    "incident_corridor": {
         "throughput": 0.15,
-        "emergency": 0.50,
-        "fairness": 0.10,
-        "efficiency": 0.10,
-        "planning": 0.10,
-        "safety": 0.05,
-    },
-    "rush_hour_surge": {
-        "throughput": 0.40,
-        "emergency": 0.15,
-        "fairness": 0.25,
-        "efficiency": 0.10,
-        "planning": 0.05,
-        "safety": 0.05,
-    },
-    "multi_incident_cascade": {
-        "throughput": 0.20,
-        "emergency": 0.35,
+        "emergency": 0.40,
         "fairness": 0.10,
         "efficiency": 0.10,
         "planning": 0.15,
         "safety": 0.10,
+    },
+    "rush_hour_wave": {
+        "throughput": 0.35,
+        "emergency": 0.10,
+        "fairness": 0.25,
+        "efficiency": 0.10,
+        "planning": 0.10,
+        "safety": 0.10,
+    },
+    "multi_crisis": {
+        "throughput": 0.15,
+        "emergency": 0.30,
+        "fairness": 0.10,
+        "efficiency": 0.10,
+        "planning": 0.20,
+        "safety": 0.15,
     },
 }
 
@@ -166,7 +166,7 @@ DIMENSION_ORDER = ["throughput", "emergency", "fairness", "efficiency", "plannin
 
 
 def build_rubric(task: str) -> WeightedSum:
-    weights = TASK_WEIGHTS.get(task, TASK_WEIGHTS["single_corridor"])
+    weights = TASK_WEIGHTS.get(task, TASK_WEIGHTS["grid_balanced"])
     rubrics = [RUBRIC_CLASSES[dim]() for dim in DIMENSION_ORDER]
     weight_list = [weights[dim] for dim in DIMENSION_ORDER]
     return WeightedSum(rubrics, weight_list)

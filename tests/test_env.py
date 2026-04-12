@@ -45,7 +45,7 @@ class TestGraderRange:
                 assert 0.0 <= val <= 1.0, f"{task}.{dim} = {val} out of range"
 
     def test_final_score_on_observation(self, env):
-        obs = env.reset(seed=42, task="single_corridor")
+        obs = env.reset(seed=42, task="grid_balanced")
         assert obs.final_score is None
         while not obs.done:
             obs = env.step(TrafficOpsAction(op="noop"))
@@ -55,61 +55,38 @@ class TestGraderRange:
 
 class TestActions:
     def test_noop_accepted(self, env):
-        env.reset(seed=42, task="single_corridor")
+        env.reset(seed=42, task="grid_balanced")
         obs = env.step(TrafficOpsAction(op="noop"))
         assert obs.last_action_error is None
 
-    def test_invalid_op_rejected(self, env):
-        env.reset(seed=42, task="single_corridor")
-        obs = env.step(TrafficOpsAction(op="preempt", targets=["NONEXISTENT"], params={"direction": "N", "duration_ticks": 10}))
+    def test_invalid_target_rejected(self, env):
+        env.reset(seed=42, task="grid_balanced")
+        obs = env.step(TrafficOpsAction(op="preempt", targets=["FAKE"], params={"direction": "N", "duration_ticks": 10}))
         assert obs.last_action_error is not None
 
     def test_budget_exhaustion(self, env):
-        env.reset(seed=42, task="single_corridor")
-        for i in range(6):
+        env.reset(seed=42, task="grid_balanced")
+        for i in range(7):
             obs = env.step(TrafficOpsAction(
-                op="set_bias",
-                targets=["I1"],
+                op="set_bias", targets=["I_0_0"],
                 params={"direction": "W", "multiplier": 2.0, "duration_ticks": 10},
             ))
         assert obs.last_action_error == "budget_exhausted"
 
-    def test_preempt_clears_emergency(self, env):
-        obs = env.reset(seed=42, task="single_corridor")
-        while not obs.done and obs.tick < 70:
-            obs = env.step(TrafficOpsAction(op="noop"))
-        obs = env.step(TrafficOpsAction(
-            op="preempt", targets=["I2"],
-            params={"direction": "N", "duration_ticks": 15},
-        ))
-        assert obs.last_action_error is None
-
 
 class TestRewardSignal:
-    def test_smart_beats_noop_on_hard_task(self, env):
-        # Noop on hard task — Max-Pressure can't reroute
-        obs = env.reset(seed=42, task="incident_and_emergencies")
+    def test_smart_beats_noop_on_incident(self, env):
+        obs = env.reset(seed=42, task="incident_corridor")
         while not obs.done:
             obs = env.step(TrafficOpsAction(op="noop"))
         noop_score = obs.final_score
 
-        # Smart: reroute around incident + preempt for emergencies
-        obs = env.reset(seed=42, task="incident_and_emergencies")
-        obs = env.step(TrafficOpsAction(
-            op="set_bias", targets=["I1", "I2", "I3", "I4"],
-            params={"direction": "S", "multiplier": 2.0, "duration_ticks": 270},
-        ))
+        obs = env.reset(seed=42, task="incident_corridor")
         while not obs.done and obs.tick < 55:
             obs = env.step(TrafficOpsAction(op="noop"))
         obs = env.step(TrafficOpsAction(
-            op="reroute", targets=["R_I1_I2"],
-            params={"blocked_road": "R_I1_I2", "detour": ["R_I1_I3", "R_I3_I4", "R_I4_I2"], "duration_ticks": 200},
-        ))
-        while not obs.done and obs.tick < 90:
-            obs = env.step(TrafficOpsAction(op="noop"))
-        obs = env.step(TrafficOpsAction(
-            op="preempt", targets=["I3", "I1"],
-            params={"direction": "S", "duration_ticks": 20},
+            op="reroute", targets=["R_h_1_1"],
+            params={"blocked_road": "R_h_1_1", "detour": ["R_v_1_1", "R_h_2_1", "R_v_2_2"], "duration_ticks": 200},
         ))
         while not obs.done:
             obs = env.step(TrafficOpsAction(op="noop"))
@@ -119,21 +96,20 @@ class TestRewardSignal:
 
 
 class TestObservation:
-    def test_roads_in_observation(self, env):
-        obs = env.reset(seed=42, task="single_corridor")
-        assert len(obs.roads) > 0
-        r = obs.roads[0]
-        assert r.id
-        assert r.from_node
-        assert r.to_node
-        assert r.length > 0
+    def test_16_intersections(self, env):
+        obs = env.reset(seed=42, task="grid_balanced")
+        assert len(obs.intersections) == 16
 
-    def test_topology_in_initial_summary(self, env):
-        obs = env.reset(seed=42, task="single_corridor")
-        assert "TOPOLOGY:" in obs.summary
+    def test_40_roads(self, env):
+        obs = env.reset(seed=42, task="grid_balanced")
+        assert len(obs.roads) == 40
+
+    def test_grid_in_summary(self, env):
+        obs = env.reset(seed=42, task="grid_balanced")
+        assert "GRID" in obs.summary
 
     def test_emergency_has_remaining_route(self, env):
-        obs = env.reset(seed=42, task="incident_and_emergencies")
+        obs = env.reset(seed=42, task="incident_corridor")
         while not obs.done and not obs.emergencies:
             obs = env.step(TrafficOpsAction(op="noop"))
         if obs.emergencies:
@@ -145,3 +121,13 @@ class TestObservation:
         for task in TASK_IDS:
             obs = env.reset(seed=42, task=task)
             assert obs.task == task
+
+
+class TestDQNController:
+    def test_dqn_controller_loads(self, env):
+        obs = env.reset(seed=42, task="grid_balanced")
+        assert env._world.rl_controller is not None
+
+    def test_dqn_controller_mode(self, env):
+        obs = env.reset(seed=42, task="grid_balanced")
+        assert env._world.controller_mode == "dqn"
