@@ -31,6 +31,22 @@ class TrafficOpsAction(Action):
     plan_id: Optional[str] = None
     reason: str = ""
 
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        import json as _json
+        if isinstance(obj, dict):
+            if isinstance(obj.get("targets"), str):
+                try:
+                    obj["targets"] = _json.loads(obj["targets"])
+                except (ValueError, TypeError):
+                    obj["targets"] = [t.strip() for t in obj["targets"].split(",") if t.strip()]
+            if isinstance(obj.get("params"), str):
+                try:
+                    obj["params"] = _json.loads(obj["params"])
+                except (ValueError, TypeError):
+                    obj["params"] = {}
+        return super().model_validate(obj, **kwargs)
+
 
 class IntersectionView(BaseModel):
     id: str

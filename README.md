@@ -76,7 +76,38 @@ Dense per-tick reward based on:
 
 Final episode score is a weighted combination of: throughput, emergency clearance, fairness (max wait), efficiency (wasted green), planning quality (budget usage), and safety (gridlock avoidance). Weights vary by task — e.g., emergency clearance is 50% of score in the hard task.
 
-## Setup
+## Quick Start — Playing in the Playground
+
+Open the **Playground** tab and follow these steps:
+
+### Step 1: Click **Reset** to start an episode
+
+### Step 2: Try an action
+
+Set the fields as follows and click **Step**:
+
+| Field | Example Value |
+|---|---|
+| **Op** | `set_bias` |
+| **Targets** | `I1,I2,I3` |
+| **Params** | `{"direction":"W","multiplier":2.5,"duration_ticks":150}` |
+| **Reason** | `heavy westbound arterial demand` |
+
+### Step 3: Observe and repeat
+
+The response shows the full observation — queues, signal phases, metrics. Click **Step** with Op=`noop` to advance the simulation without intervening.
+
+### Example actions to try
+
+| Scenario | Op | Targets | Params |
+|---|---|---|---|
+| Bias arterial | `set_bias` | `I1,I2,I3` | `{"direction":"W","multiplier":2.5,"duration_ticks":100}` |
+| Preempt for ambulance | `preempt` | `I2` | `{"direction":"N","duration_ticks":15}` |
+| Reroute around blockage | `reroute` | `R_I1_I2` | `{"blocked_road":"R_I1_I2","detour":["R_I1_I3","R_I3_I4","R_I4_I2"],"duration_ticks":200}` |
+| Coordinate corridor | `set_coordination` | `corridor_east` | `{"direction":"W","target_speed":0.5,"duration_ticks":100}` |
+| Do nothing | `noop` | | |
+
+## Setup (Local Development)
 
 ```bash
 pip install -e .
