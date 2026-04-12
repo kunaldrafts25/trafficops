@@ -13,28 +13,39 @@ LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 TASKS = ["single_corridor", "asymmetric_network", "incident_and_emergencies", "rush_hour_surge", "multi_incident_cascade"]
 
-MAX_TOTAL_TIME = 25 * 60  # 25 min hard cap (leave 5 min buffer)
-MAX_TASK_TIME = 4 * 60    # 4 min per task
-LLM_TIMEOUT = 30          # 30s per LLM call
-MAX_STEPS_PER_TASK = 30
+MAX_TOTAL_TIME = 17 * 60  # 17 min hard cap (spec says < 20 min)
+MAX_TASK_TIME = 3 * 60    # 3 min per task
+LLM_TIMEOUT = 25          # 25s per LLM call
+MAX_STEPS_PER_TASK = 25
 
-SYSTEM_PROMPT = """You are an AI traffic operations controller managing a road network. Maximize throughput, minimize wait times, prioritize emergency vehicles.
+SYSTEM_PROMPT = """You supervise traffic signals across a road network. Your goal: maximize vehicle throughput, minimize wait times, clear emergency vehicles fast.
 
-Signals use FIXED-TIME cycling by default. Use set_bias to make them DEMAND-RESPONSIVE.
+Each intersection runs a Max-Pressure controller that handles routine phase switching. You add value through NETWORK-LEVEL decisions the local controllers can't make:
 
-Actions (respond with ONE JSON object):
-- "noop": Do nothing
-- "set_bias": Enable demand-responsive switching. params={"direction":"N"|"S"|"E"|"W","multiplier":1.0-10.0,"duration_ticks":int}
-- "set_coordination": Green wave on corridor. targets=[corridor_id], params={"direction":"N"|"S"|"E"|"W","target_speed":0.5,"duration_ticks":int}
-- "preempt": Force green for emergencies. targets=[intersection_ids], params={"direction":"N"|"S"|"E"|"W","duration_ticks":1-60}
-- "reroute": Detour around blocked road. params={"blocked_road":str,"detour":[road_ids],"duration_ticks":int}
-- "set_policy": School zone. targets=[intersection_ids], params={"policy":"school_zone","duration_ticks":int}
-- "cancel": Cancel plan. plan_id=str
+ACTIONS (respond with ONE JSON object):
+1. set_bias — Make signals favor a direction. Use when one direction has much heavier traffic.
+   {"op":"set_bias","targets":["I1","I2","I3"],"params":{"direction":"W","multiplier":2.5,"duration_ticks":100},"reason":"heavy westbound queues"}
 
-Strategy: 1) set_bias on dominant direction first 2) preempt for emergencies 3) reroute around incidents 4) budget wisely
+2. preempt — Force green for emergency vehicles. Check the EMERGENCIES section for their route, then preempt intersections AHEAD of them.
+   {"op":"preempt","targets":["I2","I3"],"params":{"direction":"N","duration_ticks":15},"reason":"ambulance heading north"}
 
-Example: {"op":"set_bias","targets":["I1","I2"],"params":{"direction":"W","multiplier":2.5,"duration_ticks":100},"reason":"heavy westbound"}
-Default: {"op":"noop","targets":[],"params":{},"reason":"observing"}"""
+3. reroute — Redirect traffic around a blocked road. Check INCIDENTS for the blocked road, then DETOUR_HINTS for alternative roads.
+   {"op":"reroute","targets":["R_I1_I2"],"params":{"blocked_road":"R_I1_I2","detour":["R_I1_I3","R_I3_I4","R_I4_I2"],"duration_ticks":200},"reason":"accident blocks R_I1_I2"}
+
+4. set_coordination — Green wave along a corridor.
+   {"op":"set_coordination","targets":["corridor_east"],"params":{"direction":"W","target_speed":0.5,"duration_ticks":100},"reason":"synchronize arterial"}
+
+5. noop — Do nothing when the network is running well.
+   {"op":"noop","targets":[],"params":{},"reason":"stable"}
+
+6. cancel — Cancel an active plan by ID.
+
+DECISION GUIDE:
+- See INCIDENTS with blocked road? → reroute immediately, use DETOUR_HINTS
+- See EMERGENCIES with remaining_route? → preempt intersections along their path
+- See high queues in one direction? → set_bias for that direction
+- Everything stable? → noop (save your budget)
+- Each action except noop/cancel costs 1 from your intervention budget"""
 
 
 def build_user_message(obs_dict: dict) -> str:
