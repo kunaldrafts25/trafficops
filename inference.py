@@ -6,7 +6,7 @@ from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+HF_TOKEN = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
@@ -80,15 +80,7 @@ def run_task(task: str, llm: OpenAI, env, global_start: float):
     print(f"[START] task={task} env={env_name} model={MODEL_NAME}", flush=True)
 
     task_start = time.time()
-    try:
-        result = env.reset(task=task)
-    except Exception as e:
-        # Retry once without task kwarg (fallback to default)
-        try:
-            result = env.reset(seed=42)
-        except Exception as e2:
-            print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
-            return 0.0
+    result = env.reset(task=task)
     obs = result.observation
     obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)
 
@@ -192,11 +184,7 @@ def main():
                 print(f"[START] task={task} env=trafficops model={MODEL_NAME}", flush=True)
                 print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
                 continue
-            try:
-                run_task(task, llm, env, global_start)
-            except Exception as e:
-                print(f"[START] task={task} env=trafficops model={MODEL_NAME}", flush=True)
-                print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
+            run_task(task, llm, env, global_start)
     finally:
         env.close()
 
