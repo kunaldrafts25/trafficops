@@ -62,9 +62,26 @@ Three-intersection arterial with cross traffic and one ambulance. Bias signals t
 ### 5. `multi_incident_cascade` (Expert)
 2x2 grid with two incidents activating on different roads at different times, causing cascading congestion. Two emergency vehicles need rerouting around separate blockages. Tests multi-objective reasoning, sequential rerouting, and budget management across overlapping crises. Horizon: 300 ticks, budget: 10 interventions.
 
-## Controller Design
+## Controller Design — Three Tiers of Intelligence
 
-Intersections use **fixed-time cycling** by default — signals alternate phases at fixed intervals without responding to demand. When the LLM sets a **bias** on a direction (via `set_bias` or `set_coordination`), the controller switches to **pressure-responsive** mode, adapting phase durations based on real-time queue lengths. This means doing nothing (noop) results in substantial wasted green time, while a smart LLM agent that biases the right directions can significantly improve throughput and efficiency.
+The environment uses a hierarchical control architecture inspired by real-world traffic management centers:
+
+### Tier 1: Max-Pressure Controller (default baseline)
+Each intersection runs a **Max-Pressure** algorithm — a proven adaptive controller from traffic engineering literature that switches to the phase with the highest upstream-minus-downstream queue pressure. This handles routine traffic well but cannot coordinate across intersections, reroute around incidents, or prioritize emergencies.
+
+### Tier 2: Trained Dueling DQN (shipped with the environment)
+A **Dueling Double DQN** neural network (14-dim state → 64 → 64 → value/advantage streams) was trained on the 4x4 grid simulation for 150 episodes using parameter sharing across all intersections. The trained model (`dqn_traffic.pt`, 42KB) ships with the environment. It outperforms Max-Pressure on routine traffic but still lacks network-level coordination.
+
+The DQN was built from scratch for this environment — architecture inspired by prior research on MARL traffic signal control using IQL/VDN/QMIX with GCN/GAT graph encoders on multi-agent grids.
+
+### Tier 3: LLM Supervisor (the player)
+The LLM agent acts as a **city-level traffic operations supervisor** — the same role human operators play in real traffic management centers. It overrides local controllers with high-level commands:
+- **set_bias** — enables demand-responsive switching (local controllers become pressure-aware with LLM-specified direction weights)
+- **preempt** — forces green for emergency vehicles along their route
+- **reroute** — redirects traffic around blocked roads (something no local controller can do)
+- **set_coordination** — synchronizes signals along a corridor for green waves with computed phase offsets
+
+The LLM must beat the Max-Pressure baseline to demonstrate value. The grading system uses the openenv **Rubric** framework (`WeightedSum` of 6 `Rubric` subclasses) to score across throughput, emergency clearance, fairness, efficiency, planning quality, and safety.
 
 ## Reward Design
 
