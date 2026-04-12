@@ -36,7 +36,7 @@ class TrafficOpsEnvironment(Environment):
         task = kwargs.get("task", "single_corridor")
         from .tasks import TASK_IDS
         if task not in TASK_IDS:
-            task = "single_corridor"
+            task = TASK_IDS[0]
         seed_val = seed if seed is not None else 42
 
         self._world = build(task, seed=seed_val)
