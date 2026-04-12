@@ -171,12 +171,23 @@ def main():
     global_start = time.time()
     llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
 
+    from client import TrafficOpsEnv
+
     if LOCAL_IMAGE_NAME:
-        from client import TrafficOpsEnv
         env = TrafficOpsEnv.from_docker_image(LOCAL_IMAGE_NAME).sync()
     else:
-        from client import TrafficOpsEnv
         env = TrafficOpsEnv(base_url=ENV_URL).sync()
+
+    # Wait for container to be ready — retry reset up to 5 times
+    for attempt in range(5):
+        try:
+            warmup = env.reset()
+            break
+        except Exception:
+            if attempt < 4:
+                time.sleep(3)
+            else:
+                raise
 
     try:
         for task in TASKS:

@@ -31,9 +31,11 @@ class TrafficOpsEnvironment(Environment):
         self,
         seed: Optional[int] = None,
         episode_id: Optional[str] = None,
+        task: Optional[str] = None,
         **kwargs: Any,
     ) -> TrafficOpsObservation:
-        task = kwargs.get("task", "single_corridor")
+        if task is None:
+            task = kwargs.get("task", "grid_balanced")
         from .tasks import TASK_IDS
         if task not in TASK_IDS:
             task = TASK_IDS[0]

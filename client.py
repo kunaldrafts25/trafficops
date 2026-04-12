@@ -11,8 +11,12 @@ except ImportError:
 
 
 class TrafficOpsEnv(EnvClient[TrafficOpsAction, TrafficOpsObservation, State]):
-    def _step_payload(self, action: TrafficOpsAction) -> Dict:
-        return action.model_dump()
+    def _step_payload(self, action) -> Dict:
+        if hasattr(action, "model_dump"):
+            return action.model_dump()
+        if isinstance(action, dict):
+            return action
+        return dict(action)
 
     def _parse_result(self, payload: Dict) -> StepResult[TrafficOpsObservation]:
         obs_data = payload.get("observation", {})
