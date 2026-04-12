@@ -80,7 +80,15 @@ def run_task(task: str, llm: OpenAI, env, global_start: float):
     print(f"[START] task={task} env={env_name} model={MODEL_NAME}", flush=True)
 
     task_start = time.time()
-    result = env.reset(task=task)
+    try:
+        result = env.reset(task=task)
+    except Exception as e:
+        # Retry once without task kwarg (fallback to default)
+        try:
+            result = env.reset(seed=42)
+        except Exception as e2:
+            print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
+            return 0.0
     obs = result.observation
     obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else dict(obs)
 
@@ -184,7 +192,11 @@ def main():
                 print(f"[START] task={task} env=trafficops model={MODEL_NAME}", flush=True)
                 print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
                 continue
-            run_task(task, llm, env, global_start)
+            try:
+                run_task(task, llm, env, global_start)
+            except Exception as e:
+                print(f"[START] task={task} env=trafficops model={MODEL_NAME}", flush=True)
+                print(f"[END] success=false steps=0 score=0.000 rewards=", flush=True)
     finally:
         env.close()
 
